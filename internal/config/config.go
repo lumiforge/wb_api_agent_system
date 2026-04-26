@@ -10,6 +10,7 @@ import (
 type Config struct {
 	OpenAIAPIKey        string
 	OpenAIBaseURL       string
+	WBRegistryPath      string
 	ModelName           string
 	SystemPromptPath    string
 	PlanPromptPath      string
@@ -28,14 +29,14 @@ type Config struct {
 
 func Load() *Config {
 	return &Config{
-		OpenAIAPIKey:      getEnv("HYDRA_AI_API_KEY", ""),
-		OpenAIBaseURL:     getEnv("HYDRA_AI_BASE_URL", ""),
-		ModelName:         getEnv("SP_AGENT_MODEL", "gpt-4o-mini"),
-		SystemPromptPath:  getEnv("SP_AGENT_SYSTEM_PROMPT_PATH", "internal/agents/wb_api_agent/prompts/system.md"),
-		PlanPromptPath:    getEnv("SP_AGENT_PLAN_PROMPT_PATH", "internal/agents/wb_api_agent/prompts/plan.md"),
-		ExplorePromptPath: getEnv("SP_AGENT_EXPLORE_PROMPT_PATH", "internal/agents/wb_api_agent/prompts/explore.md"),
-		GeneralPromptPath: getEnv("SP_AGENT_GENERAL_PROMPT_PATH", "internal/agents/wb_api_agent/prompts/general.md"),
-
+		OpenAIAPIKey:        getEnv("HYDRA_AI_API_KEY", ""),
+		OpenAIBaseURL:       getEnv("HYDRA_AI_BASE_URL", ""),
+		ModelName:           getEnv("SP_AGENT_MODEL", "gpt-4o-mini"),
+		SystemPromptPath:    getEnv("SP_AGENT_SYSTEM_PROMPT_PATH", "internal/agents/wb_api_agent/prompts/system.md"),
+		PlanPromptPath:      getEnv("SP_AGENT_PLAN_PROMPT_PATH", "internal/agents/wb_api_agent/prompts/plan.md"),
+		ExplorePromptPath:   getEnv("SP_AGENT_EXPLORE_PROMPT_PATH", "internal/agents/wb_api_agent/prompts/explore.md"),
+		GeneralPromptPath:   getEnv("SP_AGENT_GENERAL_PROMPT_PATH", "internal/agents/wb_api_agent/prompts/general.md"),
+		WBRegistryPath:      getEnv("SP_AGENT_WB_REGISTRY_PATH", "docs/wb-api"),
 		SQLitePath:          getEnv("SP_AGENT_SQLITE_PATH", "wb_api_agent_system.db"),
 		DatabaseAutoMigrate: getEnvBool("SP_AGENT_DATABASE_AUTO_MIGRATE", true),
 		HTTPAddr:            getEnv("SP_AGENT_HTTP_ADDR", ":8080"),

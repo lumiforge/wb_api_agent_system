@@ -8,10 +8,14 @@ import (
 	"net/http"
 	"time"
 
+	adksession "google.golang.org/adk/session"
+
+	adksessionadapter "github.com/lumiforge/wb_api_agent_system/internal/adapters/adk/session"
+	sqliteadapter "github.com/lumiforge/wb_api_agent_system/internal/adapters/sqlite"
 	"github.com/lumiforge/wb_api_agent_system/internal/agents/wb_api_agent"
 	"github.com/lumiforge/wb_api_agent_system/internal/config"
 	"github.com/lumiforge/wb_api_agent_system/internal/services/a2a"
-	adksession "google.golang.org/adk/session"
+	"github.com/lumiforge/wb_api_agent_system/internal/services/wb_registry"
 )
 
 // PURPOSE: Wires infrastructure, agents, services, and the HTTP server into one runnable application.
@@ -31,14 +35,53 @@ func New(cfg *config.Config, logger *log.Logger) (*Application, error) {
 		return nil, err
 	}
 
-	plannerAgent := wb_api_agent.New()
+	registryDB, err := sqliteadapter.NewDB(cfg.SQLitePath)
+	if err != nil {
+		return nil, err
+	}
+
+	if cfg.DatabaseAutoMigrate {
+		// WHY: The registry loader writes app-owned operation metadata into SQLite at startup.
+		if err := sqliteadapter.ApplyMigrationFile(context.Background(), registryDB, "scheme/up.sql"); err != nil {
+			return nil, err
+		}
+	}
+
+	registryStore := sqliteadapter.NewWBRegistryStore(registryDB)
+	registryLoader := wb_registry.NewLoader(registryStore)
+
+	loadResult, err := registryLoader.LoadFromDir(context.Background(), cfg.WBRegistryPath)
+	if err != nil {
+		return nil, err
+	}
+
+	logger.Printf(
+		"WB OpenAPI registry loaded: files=%d operations=%d generated_operation_ids=%d read=%d write=%d unknown=%d jam_only=%d path=%s",
+		loadResult.FilesLoaded,
+		loadResult.OperationsLoaded,
+		loadResult.GeneratedOperationIDs,
+		loadResult.ReadOperations,
+		loadResult.WriteOperations,
+		loadResult.UnknownRiskOperations,
+		loadResult.JamOnlyOperations,
+		cfg.WBRegistryPath,
+	)
+
+	plannerAgent := wb_api_agent.New(registryStore)
 
 	a2aHandler := a2a.NewHandler(a2a.Config{
 		PublicBaseURL: cfg.PublicBaseURL,
-	}, plannerAgent)
+	}, plannerAgent, registryStore)
 
 	mux := http.NewServeMux()
-	a2aHandler.RegisterRoutes(mux)
+
+	// WHY: Application layer owns HTTP route registration; the A2A service only exposes handlers.
+	mux.HandleFunc("/healthz", a2aHandler.HandleHealth)
+	mux.HandleFunc("/a2a", a2aHandler.HandleRPC)
+	mux.HandleFunc("/debug/registry/stats", a2aHandler.HandleRegistryStats)
+	mux.HandleFunc("/debug/registry/search", a2aHandler.HandleRegistrySearch)
+	mux.HandleFunc("/.well-known/agent.json", a2aHandler.HandleAgentCard)
+	mux.HandleFunc("/.well-known/agent-card.json", a2aHandler.HandleAgentCard)
 
 	httpServer := &http.Server{
 		Addr:              cfg.HTTPAddr,

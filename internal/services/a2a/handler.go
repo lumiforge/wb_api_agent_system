@@ -3,10 +3,12 @@ package a2a
 import (
 	"encoding/json"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/lumiforge/wb_api_agent_system/internal/domain/entities"
 	"github.com/lumiforge/wb_api_agent_system/internal/domain/llm"
+	"github.com/lumiforge/wb_api_agent_system/internal/domain/wbregistry"
 )
 
 type Config struct {
@@ -15,25 +17,20 @@ type Config struct {
 
 // PURPOSE: Exposes the WB API planner through minimal A2A-compatible HTTP routes.
 type Handler struct {
-	cfg     Config
-	planner llm.Planner
+	cfg      Config
+	planner  llm.Planner
+	registry wbregistry.Retriever
 }
 
-func NewHandler(cfg Config, planner llm.Planner) *Handler {
+func NewHandler(cfg Config, planner llm.Planner, registry wbregistry.Retriever) *Handler {
 	return &Handler{
-		cfg:     cfg,
-		planner: planner,
+		cfg:      cfg,
+		planner:  planner,
+		registry: registry,
 	}
 }
 
-func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("/healthz", h.handleHealth)
-	mux.HandleFunc("/a2a", h.handleRPC)
-	mux.HandleFunc("/.well-known/agent.json", h.handleAgentCard)
-	mux.HandleFunc("/.well-known/agent-card.json", h.handleAgentCard)
-}
-
-func (h *Handler) handleHealth(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) HandleHealth(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSONRPCError(w, nil, http.StatusMethodNotAllowed, -32601, "method not allowed")
 		return
@@ -42,7 +39,46 @@ func (h *Handler) handleHealth(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
-func (h *Handler) handleAgentCard(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) HandleRegistryStats(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSONRPCError(w, nil, http.StatusMethodNotAllowed, -32601, "method not allowed")
+		return
+	}
+
+	stats, err := h.registry.Stats(r.Context())
+	if err != nil {
+		writeJSONRPCError(w, nil, http.StatusInternalServerError, -32603, err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, stats)
+}
+
+func (h *Handler) HandleRegistrySearch(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSONRPCError(w, nil, http.StatusMethodNotAllowed, -32601, "method not allowed")
+		return
+	}
+
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+
+	operations, err := h.registry.SearchOperations(r.Context(), wbregistry.SearchQuery{
+		Query:        r.URL.Query().Get("q"),
+		Limit:        limit,
+		ReadonlyOnly: r.URL.Query().Get("readonly_only") == "true",
+		ExcludeJam:   r.URL.Query().Get("exclude_jam") == "true",
+	})
+	if err != nil {
+		writeJSONRPCError(w, nil, http.StatusInternalServerError, -32603, err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"operations": operations,
+	})
+}
+
+func (h *Handler) HandleAgentCard(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSONRPCError(w, nil, http.StatusMethodNotAllowed, -32601, "method not allowed")
 		return
@@ -51,7 +87,7 @@ func (h *Handler) handleAgentCard(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, h.agentCard())
 }
 
-func (h *Handler) handleRPC(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) HandleRPC(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeJSONRPCError(w, nil, http.StatusMethodNotAllowed, -32601, "method not allowed")
 		return

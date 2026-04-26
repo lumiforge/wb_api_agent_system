@@ -155,6 +155,12 @@ type PlanValidation struct {
 	JamPolicyChecked      bool     `json:"jam_policy_checked"`
 	Errors                []string `json:"errors"`
 }
+type ValidationRule struct {
+	Field    string `json:"field"`
+	Rule     string `json:"rule"`
+	Message  string `json:"message,omitempty"`
+	Severity string `json:"severity,omitempty"`
+}
 
 func NewNeedsClarificationPlan(request BusinessRequest, questions []string) *ApiExecutionPlan {
 	requestID := request.RequestID
@@ -197,6 +203,50 @@ func NewNeedsClarificationPlan(request BusinessRequest, questions []string) *Api
 			SecretsPolicyChecked:  true,
 			JamPolicyChecked:      false,
 			Errors:                []string{},
+		},
+	}
+}
+func NewBlockedPlan(request BusinessRequest, blockReason string, warnings []PlanWarning) *ApiExecutionPlan {
+	requestID := request.RequestID
+	if requestID == "" {
+		requestID = "unknown"
+	}
+
+	intent := request.Intent
+	if intent == "" {
+		intent = "unknown"
+	}
+
+	executionMode := request.Constraints.ExecutionMode
+	if executionMode == "" {
+		executionMode = "not_executable"
+	}
+
+	return &ApiExecutionPlan{
+		SchemaVersion:    "1.0",
+		RequestID:        requestID,
+		Marketplace:      "wildberries",
+		Status:           "blocked",
+		Intent:           intent,
+		RiskLevel:        "unknown",
+		RequiresApproval: false,
+		BlockReason:      blockReason,
+		ExecutionMode:    executionMode,
+		Inputs:           map[string]InputValue{},
+		Steps:            []ApiPlanStep{},
+		Transforms:       []TransformStep{},
+		FinalOutput: FinalOutput{
+			Type:        "none",
+			Description: "Plan cannot be built from the current request and constraints.",
+		},
+		Warnings: warnings,
+		Validation: PlanValidation{
+			RegistryChecked:       true,
+			OutputSchemaChecked:   true,
+			ReadonlyPolicyChecked: request.Constraints.ReadonlyOnly,
+			SecretsPolicyChecked:  true,
+			JamPolicyChecked:      request.Constraints.NoJamSubscription,
+			Errors:                []string{blockReason},
 		},
 	}
 }

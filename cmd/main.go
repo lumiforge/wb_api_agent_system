@@ -7,8 +7,7 @@ import (
 	"os/signal"
 	"syscall"
 
-	"wb_api_agent_system/internal/app"
-
+	"github.com/lumiforge/wb_api_agent_system/internal/app"
 	"github.com/lumiforge/wb_api_agent_system/internal/config"
 )
 
