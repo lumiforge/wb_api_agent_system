@@ -1,0 +1,1 @@
+Explore the WB OpenAPI registry and select only valid operations.
