@@ -1,10 +1,16 @@
 package a2a
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/lumiforge/wb_api_agent_system/internal/domain/entities"
 	"github.com/lumiforge/wb_api_agent_system/internal/domain/llm"
@@ -13,23 +19,35 @@ import (
 
 type Config struct {
 	PublicBaseURL string
+	Logger        *log.Logger
 }
+
+const (
+	a2aMaxRequestBytes = 1 << 20
+	a2aRequestTimeout  = 120 * time.Second
+)
 
 // PURPOSE: Exposes the WB API planner through minimal A2A-compatible HTTP routes.
 type Handler struct {
 	cfg      Config
 	planner  llm.Planner
 	registry wbregistry.Retriever
+	logger   *log.Logger
 }
 
 func NewHandler(cfg Config, planner llm.Planner, registry wbregistry.Retriever) *Handler {
+	logger := cfg.Logger
+	if logger == nil {
+		logger = log.Default()
+	}
+
 	return &Handler{
 		cfg:      cfg,
 		planner:  planner,
 		registry: registry,
+		logger:   logger,
 	}
 }
-
 func (h *Handler) HandleHealth(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSONRPCError(w, nil, http.StatusMethodNotAllowed, -32601, "method not allowed")
@@ -89,18 +107,29 @@ func (h *Handler) HandleAgentCard(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) HandleRPC(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		writeJSONRPCError(w, nil, http.StatusMethodNotAllowed, -32601, "method not allowed")
+		writeJSONRPCError(w, nil, http.StatusMethodNotAllowed, -32600, "method must be POST")
 		return
 	}
 
-	var rpcRequest entities.JSONRPCRequest
-	if err := json.NewDecoder(r.Body).Decode(&rpcRequest); err != nil {
-		writeJSONRPCError(w, nil, http.StatusBadRequest, -32700, "parse error")
+	ctx, cancel := context.WithTimeout(r.Context(), a2aRequestTimeout)
+	defer cancel()
+
+	r = r.WithContext(ctx)
+	r.Body = http.MaxBytesReader(w, r.Body, a2aMaxRequestBytes)
+
+	rpcRequest, err := decodeJSONRPCRequest(r)
+	if err != nil {
+		writeJSONRPCDecodeError(w, err)
 		return
 	}
 
 	if rpcRequest.JSONRPC != "2.0" {
 		writeJSONRPCError(w, rpcRequest.ID, http.StatusBadRequest, -32600, "invalid jsonrpc version")
+		return
+	}
+
+	if rpcRequest.Method == "" {
+		writeJSONRPCError(w, rpcRequest.ID, http.StatusBadRequest, -32600, "method is required")
 		return
 	}
 
@@ -113,13 +142,34 @@ func (h *Handler) HandleRPC(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) handleMessageSend(w http.ResponseWriter, r *http.Request, rpcRequest entities.JSONRPCRequest) {
-	businessRequest := parseBusinessRequest(rpcRequest.Params)
+	startedAt := time.Now()
+
+	businessRequest, err := parseBusinessRequest(rpcRequest.Params)
+	if err != nil {
+		h.logA2AResult(rpcRequest.ID, "", "", "invalid_params", time.Since(startedAt), err)
+		writeJSONRPCError(w, rpcRequest.ID, http.StatusBadRequest, -32602, err.Error())
+		return
+	}
 
 	plan, err := h.planner.Plan(r.Context(), businessRequest)
 	if err != nil {
-		writeJSONRPCError(w, rpcRequest.ID, http.StatusOK, -32603, err.Error())
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(r.Context().Err(), context.DeadlineExceeded) {
+			h.logA2AResult(rpcRequest.ID, businessRequest.RequestID, businessRequest.Intent, "timeout", time.Since(startedAt), err)
+			writeJSONRPCError(w, rpcRequest.ID, http.StatusOK, -32000, "request timeout")
+			return
+		}
+
+		h.logA2AResult(rpcRequest.ID, businessRequest.RequestID, businessRequest.Intent, "internal_error", time.Since(startedAt), err)
+		writeJSONRPCError(w, rpcRequest.ID, http.StatusOK, -32603, "internal error")
 		return
 	}
+
+	status := ""
+	if plan != nil {
+		status = plan.Status
+	}
+
+	h.logA2AResult(rpcRequest.ID, businessRequest.RequestID, businessRequest.Intent, status, time.Since(startedAt), nil)
 
 	writeJSON(w, http.StatusOK, entities.JSONRPCResponse{
 		JSONRPC: "2.0",
@@ -127,7 +177,36 @@ func (h *Handler) handleMessageSend(w http.ResponseWriter, r *http.Request, rpcR
 		Result:  plan,
 	})
 }
+func (h *Handler) logA2AResult(
+	jsonrpcID any,
+	businessRequestID string,
+	intent string,
+	status string,
+	duration time.Duration,
+	err error,
+) {
+	if err != nil {
+		h.logger.Printf(
+			"a2a message/send finished jsonrpc_id=%v request_id=%s intent=%s status=%s duration_ms=%d error=%q",
+			jsonrpcID,
+			businessRequestID,
+			intent,
+			status,
+			duration.Milliseconds(),
+			err.Error(),
+		)
+		return
+	}
 
+	h.logger.Printf(
+		"a2a message/send finished jsonrpc_id=%v request_id=%s intent=%s status=%s duration_ms=%d",
+		jsonrpcID,
+		businessRequestID,
+		intent,
+		status,
+		duration.Milliseconds(),
+	)
+}
 func (h *Handler) agentCard() entities.AgentCard {
 	return entities.AgentCard{
 		Name:        "WB API Agent System",
@@ -152,18 +231,61 @@ func (h *Handler) agentCard() entities.AgentCard {
 	}
 }
 
-func parseBusinessRequest(raw json.RawMessage) entities.BusinessRequest {
+func parseBusinessRequest(raw json.RawMessage) (entities.BusinessRequest, error) {
 	var request entities.BusinessRequest
 	if len(raw) == 0 {
-		return request
+		return request, fmt.Errorf("params are required")
 	}
 
-	// WHY: Local tests can send the business request directly as JSON-RPC params before full A2A message parsing exists.
-	_ = json.Unmarshal(raw, &request)
+	// WHY: Boundary params must be valid BusinessRequest JSON before planner execution starts.
+	if err := json.Unmarshal(raw, &request); err != nil {
+		return request, fmt.Errorf("invalid params: %w", err)
+	}
 
-	return request
+	return request, nil
+}
+func decodeJSONRPCRequest(r *http.Request) (entities.JSONRPCRequest, error) {
+	var request entities.JSONRPCRequest
+
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+
+	if err := decoder.Decode(&request); err != nil {
+		return request, err
+	}
+
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		return request, fmt.Errorf("request body must contain exactly one JSON object")
+	}
+
+	return request, nil
 }
 
+func writeJSONRPCDecodeError(w http.ResponseWriter, err error) {
+	if strings.Contains(err.Error(), "http: request body too large") {
+		writeJSONRPCError(w, nil, http.StatusRequestEntityTooLarge, -32600, "request body too large")
+		return
+	}
+
+	var syntaxError *json.SyntaxError
+	if errors.As(err, &syntaxError) {
+		writeJSONRPCError(w, nil, http.StatusBadRequest, -32700, "parse error")
+		return
+	}
+
+	var typeError *json.UnmarshalTypeError
+	if errors.As(err, &typeError) {
+		writeJSONRPCError(w, nil, http.StatusBadRequest, -32600, "invalid request")
+		return
+	}
+
+	if strings.Contains(err.Error(), "unknown field") {
+		writeJSONRPCError(w, nil, http.StatusBadRequest, -32600, "invalid request")
+		return
+	}
+
+	writeJSONRPCError(w, nil, http.StatusBadRequest, -32600, "invalid request")
+}
 func writeJSONRPCError(w http.ResponseWriter, id any, statusCode int, code int, message string) {
 	writeJSON(w, statusCode, entities.JSONRPCResponse{
 		JSONRPC: "2.0",
@@ -176,7 +298,7 @@ func writeJSONRPCError(w http.ResponseWriter, id any, statusCode int, code int, 
 }
 
 func writeJSON(w http.ResponseWriter, statusCode int, value any) {
-	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(statusCode)
 	_ = json.NewEncoder(w).Encode(value)
 }

@@ -21,6 +21,8 @@ type Config struct {
 	HTTPAddr            string
 	PublicBaseURL       string
 
+	DebugLogPlannerInput bool
+
 	CompactionEnabled            bool
 	CompactionTokenThreshold     int
 	CompactionRetainRecentEvents int
@@ -42,6 +44,7 @@ func Load() *Config {
 		HTTPAddr:            getEnv("SP_AGENT_HTTP_ADDR", ":8080"),
 		PublicBaseURL:       getEnv("SP_AGENT_PUBLIC_BASE_URL", "http://localhost:8080"),
 
+		DebugLogPlannerInput:         getEnvBool("SP_AGENT_DEBUG_LOG_PLANNER_INPUT", false),
 		CompactionEnabled:            getEnvBool("SP_AGENT_COMPACTION_ENABLED", true),
 		CompactionTokenThreshold:     getEnvInt("SP_AGENT_COMPACTION_TOKEN_THRESHOLD", 60000, 1000, 2000000),
 		CompactionRetainRecentEvents: getEnvInt("SP_AGENT_COMPACTION_RETAIN_RECENT_EVENTS", 8, 1, 100),

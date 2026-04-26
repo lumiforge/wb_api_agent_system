@@ -6,15 +6,18 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"time"
 
 	adksession "google.golang.org/adk/session"
 
+	adkllm "github.com/lumiforge/wb_api_agent_system/internal/adapters/adk/llm"
 	adksessionadapter "github.com/lumiforge/wb_api_agent_system/internal/adapters/adk/session"
 	sqliteadapter "github.com/lumiforge/wb_api_agent_system/internal/adapters/sqlite"
 	"github.com/lumiforge/wb_api_agent_system/internal/agents/wb_api_agent"
 	"github.com/lumiforge/wb_api_agent_system/internal/config"
 	"github.com/lumiforge/wb_api_agent_system/internal/services/a2a"
+	"github.com/lumiforge/wb_api_agent_system/internal/services/deterministic_planner"
 	"github.com/lumiforge/wb_api_agent_system/internal/services/wb_registry"
 )
 
@@ -67,10 +70,54 @@ func New(cfg *config.Config, logger *log.Logger) (*Application, error) {
 		cfg.WBRegistryPath,
 	)
 
-	plannerAgent := wb_api_agent.New(registryStore)
+	systemPrompt, err := os.ReadFile(cfg.SystemPromptPath)
+	if err != nil {
+		return nil, fmt.Errorf("read system prompt: %w", err)
+	}
+
+	planPrompt, err := os.ReadFile(cfg.PlanPromptPath)
+	if err != nil {
+		return nil, fmt.Errorf("read plan prompt: %w", err)
+	}
+
+	explorePrompt, err := os.ReadFile(cfg.ExplorePromptPath)
+	if err != nil {
+		return nil, fmt.Errorf("read explore prompt: %w", err)
+	}
+
+	generalPrompt, err := os.ReadFile(cfg.GeneralPromptPath)
+	if err != nil {
+		return nil, fmt.Errorf("read general prompt: %w", err)
+	}
+
+	deterministicPlanner := deterministic_planner.New(registryStore)
+
+	llmModel := adkllm.NewOpenAICompatibleModel(
+		cfg.ModelName,
+		cfg.OpenAIBaseURL,
+		cfg.OpenAIAPIKey,
+	)
+
+	plannerAgent, err := wb_api_agent.New(wb_api_agent.Config{
+		Registry:             registryStore,
+		DeterministicPlanner: deterministicPlanner,
+		SessionService:       sessionService,
+		Model:                llmModel,
+		Logger:               logger,
+		SystemPrompt:         string(systemPrompt),
+		PlanPrompt:           string(planPrompt),
+		ExplorePrompt:        string(explorePrompt),
+		GeneralPrompt:        string(generalPrompt),
+		ModelName:            cfg.ModelName,
+		DebugLogPlannerInput: cfg.DebugLogPlannerInput,
+	})
+	if err != nil {
+		return nil, err
+	}
 
 	a2aHandler := a2a.NewHandler(a2a.Config{
 		PublicBaseURL: cfg.PublicBaseURL,
+		Logger:        logger,
 	}, plannerAgent, registryStore)
 
 	mux := http.NewServeMux()

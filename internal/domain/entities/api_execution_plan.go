@@ -250,3 +250,292 @@ func NewBlockedPlan(request BusinessRequest, blockReason string, warnings []Plan
 		},
 	}
 }
+
+func NewPlanningNotImplementedPlan(request BusinessRequest) *ApiExecutionPlan {
+	requestID := request.RequestID
+	if requestID == "" {
+		requestID = "unknown"
+	}
+
+	intent := request.Intent
+	if intent == "" {
+		intent = "unknown"
+	}
+
+	executionMode := request.Constraints.ExecutionMode
+	if executionMode == "" {
+		executionMode = "not_executable"
+	}
+
+	return &ApiExecutionPlan{
+		SchemaVersion:       "1.0",
+		RequestID:           requestID,
+		Marketplace:         "wildberries",
+		Status:              "needs_clarification",
+		Intent:              intent,
+		RiskLevel:           "unknown",
+		RequiresApproval:    false,
+		ClarifyingQuestions: []string{"Planner found candidate WB API operations, but final step composition is not implemented yet."},
+		ExecutionMode:       executionMode,
+		Inputs:              map[string]InputValue{},
+		Steps:               []ApiPlanStep{},
+		Transforms:          []TransformStep{},
+		FinalOutput: FinalOutput{
+			Type:        "none",
+			Description: "Plan cannot be finalized until step composition is implemented.",
+		},
+		Warnings: []PlanWarning{},
+		Validation: PlanValidation{
+			RegistryChecked:       true,
+			OutputSchemaChecked:   true,
+			ReadonlyPolicyChecked: request.Constraints.ReadonlyOnly,
+			SecretsPolicyChecked:  true,
+			JamPolicyChecked:      request.Constraints.NoJamSubscription,
+			Errors:                []string{},
+		},
+	}
+}
+
+func NewSellerWarehouseStocksPlan(
+	request BusinessRequest,
+	operation WBRegistryOperation,
+	warehouseID int,
+	chrtIDs []int,
+) *ApiExecutionPlan {
+	executionMode := request.Constraints.ExecutionMode
+	if executionMode == "" {
+		executionMode = "automatic"
+	}
+
+	return &ApiExecutionPlan{
+		SchemaVersion:          "1.0",
+		RequestID:              request.RequestID,
+		Marketplace:            "wildberries",
+		Status:                 "ready",
+		Intent:                 request.Intent,
+		NaturalLanguageSummary: "Get product stocks from seller warehouse.",
+		RiskLevel:              "read",
+		RequiresApproval:       false,
+		ExecutionMode:          executionMode,
+		Inputs: map[string]InputValue{
+			"warehouse_id": {
+				Type:        "integer",
+				Required:    true,
+				Value:       warehouseID,
+				Description: "Seller warehouse ID.",
+			},
+			"chrt_ids": {
+				Type:        "array",
+				Required:    true,
+				Value:       chrtIDs,
+				Description: "Product size IDs requested from WB stocks endpoint.",
+			},
+		},
+		Steps: []ApiPlanStep{
+			{
+				StepID:      "get_seller_warehouse_stocks",
+				OperationID: operation.OperationID,
+				SourceFile:  operation.SourceFile,
+				Readonly:    true,
+				RiskLevel:   "read",
+				Purpose:     "Get stock amounts for requested product sizes on the selected seller warehouse.",
+				DependsOn:   []string{},
+				Request: HttpRequestTemplate{
+					ServerURL:    operation.ServerURL,
+					Method:       operation.Method,
+					PathTemplate: operation.PathTemplate,
+					PathParams: map[string]ValueBinding{
+						"warehouseId": {
+							Source:    "input",
+							InputName: "warehouse_id",
+							Required:  true,
+						},
+					},
+					QueryParams: map[string]ValueBinding{},
+					Headers: map[string]HeaderBinding{
+						"Authorization": {
+							Source:     "executor_secret",
+							SecretName: "WB_AUTHORIZATION",
+							Required:   true,
+						},
+					},
+					// WHY: Executor must resolve body values from declared plan inputs instead of relying on duplicated literal payload data.
+					Body: map[string]any{
+						"chrtIds": ValueBinding{
+							Source:    "input",
+							InputName: "chrt_ids",
+							Required:  true,
+						},
+					},
+					ContentType: "application/json",
+					Accept:      "application/json",
+				},
+				Pagination: PaginationPlan{
+					Enabled:  false,
+					Strategy: "none",
+				},
+				RetryPolicy: RetryPolicy{
+					Enabled:       true,
+					MaxAttempts:   3,
+					RetryOnStatus: []int{429, 500, 502, 503, 504},
+					Backoff: BackoffPolicy{
+						Type:           "exponential",
+						InitialDelayMS: 1000,
+						MaxDelayMS:     20000,
+					},
+				},
+				RateLimitPolicy: RateLimitPolicy{
+					Enabled:       true,
+					Bucket:        "marketplace_stocks",
+					MaxRequests:   300,
+					PeriodSeconds: 60,
+					MinIntervalMS: 200,
+				},
+				ResponseMapping: ResponseMapping{
+					Outputs: map[string]MappedOutput{
+						"stocks": {
+							Type: "rows",
+							Path: "$.stocks",
+						},
+					},
+					PostFilters: []PostFilter{},
+				},
+			},
+		},
+		Transforms: []TransformStep{},
+		FinalOutput: FinalOutput{
+			Type:        "object",
+			Description: "Stocks by chrtId for the requested seller warehouse.",
+			Fields: map[string]any{
+				"warehouse_id": "input.warehouse_id",
+				"stocks":       "steps.get_seller_warehouse_stocks.outputs.stocks",
+			},
+		},
+		Warnings: []PlanWarning{},
+		Validation: PlanValidation{
+			RegistryChecked:       true,
+			OutputSchemaChecked:   true,
+			ReadonlyPolicyChecked: true,
+			SecretsPolicyChecked:  true,
+			JamPolicyChecked:      request.Constraints.NoJamSubscription,
+			Errors:                []string{},
+		},
+	}
+}
+
+func NewLLMPlanningNotImplementedPlan(request BusinessRequest, candidates []WBRegistryOperation) *ApiExecutionPlan {
+	requestID := request.RequestID
+	if requestID == "" {
+		requestID = "unknown"
+	}
+
+	intent := request.Intent
+	if intent == "" {
+		intent = "unknown"
+	}
+
+	executionMode := request.Constraints.ExecutionMode
+	if executionMode == "" {
+		executionMode = "not_executable"
+	}
+
+	return &ApiExecutionPlan{
+		SchemaVersion:       "1.0",
+		RequestID:           requestID,
+		Marketplace:         "wildberries",
+		Status:              "needs_clarification",
+		Intent:              intent,
+		RiskLevel:           "unknown",
+		RequiresApproval:    false,
+		ClarifyingQuestions: []string{"LLM planner fallback input is prepared, but ADK planner and formatter execution are not implemented yet."},
+		ExecutionMode:       executionMode,
+		Inputs:              map[string]InputValue{},
+		Steps:               []ApiPlanStep{},
+		Transforms:          []TransformStep{},
+		FinalOutput: FinalOutput{
+			Type:        "none",
+			Description: "Registry candidates and planner input were prepared, but ADK planner and formatter are not connected yet.",
+		},
+		Warnings: candidateOperationWarnings(candidates),
+		Validation: PlanValidation{
+			RegistryChecked:       true,
+			OutputSchemaChecked:   true,
+			ReadonlyPolicyChecked: request.Constraints.ReadonlyOnly,
+			SecretsPolicyChecked:  true,
+			JamPolicyChecked:      request.Constraints.NoJamSubscription,
+			Errors:                []string{},
+		},
+	}
+}
+
+func candidateOperationWarnings(candidates []WBRegistryOperation) []PlanWarning {
+	if len(candidates) == 0 {
+		return []PlanWarning{}
+	}
+
+	limit := len(candidates)
+	if limit > 5 {
+		limit = 5
+	}
+
+	warnings := make([]PlanWarning, 0, limit)
+	for i := 0; i < limit; i++ {
+		operation := candidates[i]
+
+		warnings = append(warnings, PlanWarning{
+			Code:    "candidate_registry_operation",
+			Message: operation.OperationID + " " + operation.Method + " " + operation.PathTemplate,
+		})
+	}
+
+	return warnings
+}
+
+func NewRegistryValidatedNeedsClarificationPlan(
+	request BusinessRequest,
+	questions []string,
+	warnings []PlanWarning,
+) *ApiExecutionPlan {
+	requestID := request.RequestID
+	if requestID == "" {
+		requestID = "unknown"
+	}
+
+	intent := request.Intent
+	if intent == "" {
+		intent = "unknown"
+	}
+
+	executionMode := request.Constraints.ExecutionMode
+	if executionMode == "" {
+		executionMode = "not_executable"
+	}
+
+	return &ApiExecutionPlan{
+		SchemaVersion:       "1.0",
+		RequestID:           requestID,
+		Marketplace:         "wildberries",
+		Status:              "needs_clarification",
+		Intent:              intent,
+		RiskLevel:           "unknown",
+		RequiresApproval:    false,
+		ClarifyingQuestions: questions,
+		ExecutionMode:       executionMode,
+		Inputs:              map[string]InputValue{},
+		Steps:               []ApiPlanStep{},
+		Transforms:          []TransformStep{},
+		FinalOutput: FinalOutput{
+			Type:        "none",
+			Description: "Plan cannot be finalized until required input values are provided.",
+		},
+		Warnings: warnings,
+		Validation: PlanValidation{
+			RegistryChecked:       true,
+			OutputSchemaChecked:   true,
+			ReadonlyPolicyChecked: request.Constraints.ReadonlyOnly,
+			SecretsPolicyChecked:  true,
+			JamPolicyChecked:      request.Constraints.NoJamSubscription,
+			Errors:                []string{},
+		},
+	}
+}

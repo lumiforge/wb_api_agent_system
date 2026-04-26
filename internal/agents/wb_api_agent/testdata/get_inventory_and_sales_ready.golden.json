@@ -1,0 +1,200 @@
+{
+  "schema_version": "1.0",
+  "request_id": "req_test_001",
+  "marketplace": "wildberries",
+  "status": "ready",
+  "intent": "get_inventory_and_sales",
+  "natural_language_summary": "Получить остатки на складе 507 и продажи за период",
+  "risk_level": "read",
+  "requires_approval": false,
+  "execution_mode": "automatic",
+  "inputs": {
+"chrt_ids": {
+  "type": "array",
+  "required": true,
+  "value": [
+    12345678,
+    87654321
+  ],
+  "description": "Массив ID размеров товаров"
+},
+   "date_from": {
+  "type": "string",
+  "required": true,
+  "value": "2026-03-26",
+  "description": "Дата начала периода"
+},
+    "date_to": {
+      "type": "string",
+      "required": false,
+      "value": "2026-04-26",
+      "description": "Period end date."
+    },
+"warehouse_id": {
+  "type": "integer",
+  "required": true,
+  "value": 507,
+  "description": "ID склада"
+}
+  },
+  "steps": [
+    {
+      "step_id": "get_inventory",
+      "operation_id": "generated_post_api_v3_stocks_warehouseid",
+      "source_file": "products.yaml",
+      "readonly": true,
+      "risk_level": "read",
+      "purpose": "Получить остатки товаров на складе",
+      "depends_on": [],
+      "request": {
+        "server_url": "https://marketplace-api.wildberries.ru",
+        "method": "POST",
+        "path_template": "/api/v3/stocks/{warehouseId}",
+        "path_params": {
+          "warehouseId": {
+            "source": "input",
+            "input_name": "warehouse_id",
+            "required": true
+          }
+        },
+        "query_params": {},
+        "headers": {
+          "Authorization": {
+            "source": "executor_secret",
+            "secret_name": "WB_AUTHORIZATION",
+            "required": true
+          }
+        },
+        "body": {
+          "chrtIds": {
+            "source": "input",
+            "input_name": "chrt_ids",
+            "required": true
+          }
+        },
+        "content_type": "application/json",
+        "accept": "application/json"
+      },
+      "pagination": {
+        "enabled": false,
+        "strategy": "none"
+      },
+      "retry_policy": {
+        "enabled": true,
+        "max_attempts": 3,
+        "retry_on_status": [
+          429,
+          500,
+          502,
+          503,
+          504
+        ],
+        "backoff": {
+          "type": "exponential",
+          "initial_delay_ms": 1000,
+          "max_delay_ms": 20000
+        }
+      },
+      "rate_limit_policy": {
+        "enabled": true,
+        "bucket": "generated_post_api_v3_stocks_warehouseid",
+        "max_requests": 1,
+        "period_seconds": 60,
+        "min_interval_ms": 1000
+      },
+      "response_mapping": {
+        "outputs": {
+          "stocks": {
+            "type": "rows",
+            "path": "$.stocks"
+          }
+        }
+      }
+    },
+    {
+      "step_id": "get_sales",
+      "operation_id": "generated_get_api_v1_supplier_sales",
+      "source_file": "reports.yaml",
+      "readonly": true,
+      "risk_level": "read",
+      "purpose": "Получить данные о продажах за указанный период",
+      "depends_on": [],
+      "request": {
+        "server_url": "https://statistics-api.wildberries.ru",
+        "method": "GET",
+        "path_template": "/api/v1/supplier/sales",
+        "path_params": {},
+        "query_params": {
+          "dateFrom": {
+            "source": "input",
+            "input_name": "date_from",
+            "required": true
+          }
+        },
+        "headers": {
+          "Authorization": {
+            "source": "executor_secret",
+            "secret_name": "WB_AUTHORIZATION",
+            "required": true
+          }
+        },
+        "body": {},
+        "content_type": "application/json",
+        "accept": "application/json"
+      },
+      "pagination": {
+        "enabled": false,
+        "strategy": "none"
+      },
+      "retry_policy": {
+        "enabled": true,
+        "max_attempts": 3,
+        "retry_on_status": [
+          429,
+          500,
+          502,
+          503,
+          504
+        ],
+        "backoff": {
+          "type": "exponential",
+          "initial_delay_ms": 1000,
+          "max_delay_ms": 20000
+        }
+      },
+      "rate_limit_policy": {
+        "enabled": true,
+        "bucket": "generated_get_api_v1_supplier_sales",
+        "max_requests": 1,
+        "period_seconds": 60,
+        "min_interval_ms": 1000
+      },
+      "response_mapping": {
+        "outputs": {
+          "sales": {
+            "type": "rows",
+            "path": "$"
+          }
+        }
+      }
+    }
+  ],
+  "transforms": [],
+  "final_output": {
+    "type": "object",
+    "description": "Получить остатки на складе 507 и продажи за период",
+    "fields": {
+      "sales": "steps.get_sales.outputs.sales",
+      "stocks": "steps.get_inventory.outputs.stocks"
+    }
+  },
+  "warnings": [],
+  "validation": {
+    "registry_checked": true,
+    "output_schema_checked": true,
+    "readonly_policy_checked": true,
+    "secrets_policy_checked": true,
+    "jam_policy_checked": true,
+    "errors": []
+  }
+}
