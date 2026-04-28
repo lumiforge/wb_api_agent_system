@@ -41,8 +41,8 @@ func Load() *Config {
 		WBRegistryPath:      getEnv("SP_AGENT_WB_REGISTRY_PATH", "docs/wb-api"),
 		SQLitePath:          getEnv("SP_AGENT_SQLITE_PATH", "wb_api_agent_system.db"),
 		DatabaseAutoMigrate: getEnvBool("SP_AGENT_DATABASE_AUTO_MIGRATE", true),
-		HTTPAddr:            getEnv("SP_AGENT_HTTP_ADDR", ":8080"),
-		PublicBaseURL:       getEnv("SP_AGENT_PUBLIC_BASE_URL", "http://localhost:8080"),
+		HTTPAddr:            getEnv("SP_AGENT_HTTP_ADDR", ":8090"),
+		PublicBaseURL:       getEnv("SP_AGENT_PUBLIC_BASE_URL", "http://localhost:8090"),
 
 		DebugLogPlannerInput:         getEnvBool("SP_AGENT_DEBUG_LOG_PLANNER_INPUT", false),
 		CompactionEnabled:            getEnvBool("SP_AGENT_COMPACTION_ENABLED", true),
