@@ -9,6 +9,7 @@ type PlannerInput struct {
 	Prompts            PlannerPrompts                `json:"prompts"`
 	Policies           PlannerPolicies               `json:"policies"`
 	OutputContract     string                        `json:"output_contract"`
+	Metadata           *entities.RequestMetadata     `json:"metadata,omitempty"`
 }
 
 type PlannerPrompts struct {

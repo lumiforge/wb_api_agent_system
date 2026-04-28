@@ -156,3 +156,35 @@ func testStocksOperation() entities.WBRegistryOperation {
 		RequiresJam:              false,
 	}
 }
+
+func TestSellerWarehouseStocksScenarioPreservesMetadata(t *testing.T) {
+	registry := &testRegistry{
+		operations: map[string]entities.WBRegistryOperation{
+			"generated_post_api_v3_stocks_warehouseid": testStocksOperation(),
+		},
+	}
+
+	scenario := NewSellerWarehouseStocksScenario(registry)
+	request := entities.BusinessRequest{
+		RequestID:              "req_meta_det",
+		Marketplace:            "wildberries",
+		Intent:                 "get_seller_warehouse_stocks",
+		NaturalLanguageRequest: "stocks",
+		Entities: map[string]any{
+			"warehouse_id": float64(507),
+			"chrt_ids":     []any{float64(1)},
+		},
+		Metadata: &entities.RequestMetadata{CorrelationID: "corr_det", SessionID: "sess_det"},
+	}
+
+	plan, handled, err := scenario.TryPlan(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !handled {
+		t.Fatal("expected handled")
+	}
+	if plan.Metadata == nil || plan.Metadata.CorrelationID != "corr_det" {
+		t.Fatalf("expected preserved metadata, got %#v", plan.Metadata)
+	}
+}

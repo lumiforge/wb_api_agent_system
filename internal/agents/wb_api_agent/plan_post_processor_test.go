@@ -492,3 +492,65 @@ func TestValuesEquivalent(t *testing.T) {
 		t.Fatal("expected nested InputValue to be unwrapped")
 	}
 }
+
+func TestPlanPostProcessorPreservesInputMetadata(t *testing.T) {
+	request := entities.BusinessRequest{
+		RequestID: "req_meta_1",
+		Metadata: &entities.RequestMetadata{
+			CorrelationID:     "corr_input",
+			SessionID:         "sess_input",
+			RunID:             "run_input",
+			ToolCallID:        "call_input",
+			ClientExecutionID: "exec_input",
+		},
+	}
+
+	plan := &entities.ApiExecutionPlan{
+		Status: "needs_clarification",
+		Metadata: &entities.RequestMetadata{
+			CorrelationID: "corr_llm",
+		},
+		ClarifyingQuestions: []string{"q1"},
+	}
+
+	processor := NewPlanPostProcessor(&testRegistry{operations: map[string]entities.WBRegistryOperation{}})
+
+	validationPlan, err := processor.Process(context.Background(), request, plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if validationPlan != nil {
+		t.Fatalf("expected nil validationPlan, got %#v", validationPlan)
+	}
+	if plan.Metadata == nil || plan.Metadata.CorrelationID != "corr_input" {
+		t.Fatalf("expected metadata from request, got %#v", plan.Metadata)
+	}
+}
+
+func TestPlanPostProcessorOverridesLLMMetadataInReplacementPlan(t *testing.T) {
+	request := entities.BusinessRequest{
+		RequestID: "req_meta_2",
+		Metadata: &entities.RequestMetadata{
+			CorrelationID: "corr_input",
+			SessionID:     "sess_input",
+		},
+	}
+
+	plan := &entities.ApiExecutionPlan{
+		Status:   "blocked",
+		Metadata: &entities.RequestMetadata{CorrelationID: "corr_llm"},
+	}
+
+	processor := NewPlanPostProcessor(&testRegistry{operations: map[string]entities.WBRegistryOperation{}})
+
+	validationPlan, err := processor.Process(context.Background(), request, plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if validationPlan == nil {
+		t.Fatal("expected replacement blocked plan")
+	}
+	if validationPlan.Metadata == nil || validationPlan.Metadata.CorrelationID != "corr_input" {
+		t.Fatalf("expected replacement metadata from request, got %#v", validationPlan.Metadata)
+	}
+}

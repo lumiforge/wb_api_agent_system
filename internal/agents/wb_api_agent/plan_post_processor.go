@@ -23,5 +23,37 @@ func (p *PlanPostProcessor) Process(
 	request entities.BusinessRequest,
 	plan *entities.ApiExecutionPlan,
 ) (*entities.ApiExecutionPlan, error) {
-	return p.validatePlan(ctx, request, plan)
+	normalizeExecutionMode(plan)
+	validationPlan, err := p.validatePlan(ctx, request, plan)
+	if err != nil {
+		return nil, err
+	}
+
+	if validationPlan != nil {
+		validationPlan.Metadata = request.Metadata
+		return validationPlan, nil
+	}
+
+	plan.Metadata = request.Metadata
+	return nil, nil
+}
+
+func normalizeExecutionMode(plan *entities.ApiExecutionPlan) {
+	if plan == nil || plan.ExecutionMode != "" {
+		return
+	}
+
+	// WHY: ADK fallback can return an otherwise valid plan with empty execution_mode.
+	// Normalize before validation so a ready client-executable plan is not blocked
+	// only because the LLM omitted this technical field.
+	switch plan.Status {
+	case "ready":
+		plan.ExecutionMode = "automatic"
+	case "needs_clarification":
+		plan.ExecutionMode = "not_executable"
+	case "blocked":
+		plan.ExecutionMode = "not_executable"
+	default:
+		plan.ExecutionMode = "not_executable"
+	}
 }

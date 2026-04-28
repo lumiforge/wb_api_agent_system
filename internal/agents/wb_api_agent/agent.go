@@ -96,6 +96,8 @@ func New(cfg Config) (*Agent, error) {
 }
 
 func (a *Agent) Plan(ctx context.Context, request entities.BusinessRequest) (*entities.ApiExecutionPlan, error) {
+	request.NormalizeCorrelationIdentifiers()
+
 	questions := requiredQuestions(request)
 	if len(questions) > 0 {
 		// WHY: Boundary requests must be converted into ApiExecutionPlan instead of HTTP errors.
@@ -103,6 +105,16 @@ func (a *Agent) Plan(ctx context.Context, request entities.BusinessRequest) (*en
 	}
 
 	plan, handled, err := a.deterministicPlanner.TryPlan(ctx, request)
+	if handled {
+		a.logger.Printf("deterministic planner handled request_id=%s correlation_id=%s session_id=%s run_id=%s tool_call_id=%s client_execution_id=%s",
+			request.RequestID,
+			metadataValue(request.Metadata, func(m *entities.RequestMetadata) string { return m.CorrelationID }),
+			metadataValue(request.Metadata, func(m *entities.RequestMetadata) string { return m.SessionID }),
+			metadataValue(request.Metadata, func(m *entities.RequestMetadata) string { return m.RunID }),
+			metadataValue(request.Metadata, func(m *entities.RequestMetadata) string { return m.ToolCallID }),
+			metadataValue(request.Metadata, func(m *entities.RequestMetadata) string { return m.ClientExecutionID }),
+		)
+	}
 	if err != nil || handled {
 		return plan, err
 	}
@@ -131,6 +143,14 @@ func (a *Agent) Plan(ctx context.Context, request entities.BusinessRequest) (*en
 	}
 
 	// WHY: Non-deterministic requests are delegated to ADK after registry retrieval has constrained the operation set.
+	a.logger.Printf("adk fallback started request_id=%s correlation_id=%s session_id=%s run_id=%s tool_call_id=%s client_execution_id=%s",
+		request.RequestID,
+		metadataValue(request.Metadata, func(m *entities.RequestMetadata) string { return m.CorrelationID }),
+		metadataValue(request.Metadata, func(m *entities.RequestMetadata) string { return m.SessionID }),
+		metadataValue(request.Metadata, func(m *entities.RequestMetadata) string { return m.RunID }),
+		metadataValue(request.Metadata, func(m *entities.RequestMetadata) string { return m.ToolCallID }),
+		metadataValue(request.Metadata, func(m *entities.RequestMetadata) string { return m.ClientExecutionID }),
+	)
 	return a.planWithADK(ctx, request, operations)
 }
 
@@ -189,6 +209,14 @@ func (a *Agent) planWithADK(
 	if err != nil {
 		return nil, err
 	}
+	a.logger.Printf("plan post-processing completed request_id=%s correlation_id=%s session_id=%s run_id=%s tool_call_id=%s client_execution_id=%s",
+		request.RequestID,
+		metadataValue(request.Metadata, func(m *entities.RequestMetadata) string { return m.CorrelationID }),
+		metadataValue(request.Metadata, func(m *entities.RequestMetadata) string { return m.SessionID }),
+		metadataValue(request.Metadata, func(m *entities.RequestMetadata) string { return m.RunID }),
+		metadataValue(request.Metadata, func(m *entities.RequestMetadata) string { return m.ToolCallID }),
+		metadataValue(request.Metadata, func(m *entities.RequestMetadata) string { return m.ClientExecutionID }),
+	)
 	if validationPlan != nil {
 		return validationPlan, nil
 	}
@@ -271,12 +299,17 @@ func (a *Agent) buildPlannerInput(
 			NoHTTPExecution:   true,
 			RegistryOnly:      true,
 		},
+		Metadata: request.Metadata,
 		OutputContract: strings.Join([]string{
 			"Return exactly one ApiExecutionPlan JSON object.",
 			"The JSON object must be the ApiExecutionPlan itself, not wrapped in result, data, plan, api_execution_plan, or markdown.",
 			"schema_version must be \"1.0\".",
 			"marketplace must be \"wildberries\".",
 			"status must be one of: ready, needs_clarification, blocked.",
+			"execution_mode is required and must never be empty.",
+			"If status is \"ready\", execution_mode must be \"automatic\".",
+			"If status is \"blocked\", execution_mode must be \"not_executable\".",
+			"If status is \"needs_clarification\", execution_mode must be \"not_executable\".",
 			"inputs must be map[string]InputValue, not primitive values.",
 			"Each input value must have type, required, value, and description.",
 			"steps must be []ApiPlanStep with full step structure.",
@@ -292,9 +325,18 @@ func (a *Agent) buildPlannerInput(
 			"If business_request.entities.chrt_ids is present and non-empty, use it for stocks request body chrtIds.",
 			"If business_request.entities.warehouse_id is present, use it for warehouseId.",
 			"If business_request.period.from is present, use it for dateFrom.",
+			"Do not copy an empty business_request.constraints.execution_mode into the plan.",
 			"Do not return needs_clarification when all required inputs are present.",
 		}, " "),
 	}
+}
+
+func metadataValue(metadata *entities.RequestMetadata, selector func(*entities.RequestMetadata) string) string {
+	if metadata == nil {
+		return ""
+	}
+
+	return selector(metadata)
 }
 
 func buildADKInstruction(cfg Config) string {
@@ -320,7 +362,7 @@ func buildADKInstruction(cfg Config) string {
   "natural_language_summary": "short summary",
   "risk_level": "read",
   "requires_approval": false,
-  "execution_mode": "same as business_request.constraints.execution_mode",
+  "execution_mode": "automatic",
   "inputs": {
     "input_name": {
       "type": "string|integer|array|object|boolean",
@@ -400,6 +442,11 @@ func buildADKInstruction(cfg Config) string {
 }`,
 
 		"Do not use primitive values inside inputs. Every inputs value must be an object with type, required, value, and description.",
+		"execution_mode is required and must never be empty.",
+		"If status=\"ready\", execution_mode must be \"automatic\".",
+		"If status=\"blocked\", execution_mode must be \"not_executable\".",
+		"If status=\"needs_clarification\", execution_mode must be \"not_executable\".",
+		"Do not copy an empty business_request.constraints.execution_mode into the plan.",
 		"Do not put method, server_url, path_template, or Authorization directly in a step.",
 		"Every HTTP detail must be inside step.request.",
 		"Authorization must be inside step.request.headers.Authorization and must use source=executor_secret, secret_name=WB_AUTHORIZATION.",
@@ -499,6 +546,7 @@ type rawApiExecutionPlan struct {
 	FinalOutput            entities.FinalOutput           `json:"final_output"`
 	Warnings               []entities.PlanWarning         `json:"warnings"`
 	Validation             entities.PlanValidation        `json:"validation"`
+	Metadata               *entities.RequestMetadata      `json:"metadata,omitempty"`
 }
 
 type rawApiPlanStep struct {
@@ -554,6 +602,7 @@ func (p rawApiExecutionPlan) toPlan() entities.ApiExecutionPlan {
 		FinalOutput:            p.FinalOutput,
 		Warnings:               nonNilWarnings(p.Warnings),
 		Validation:             normalizeValidation(p.Validation),
+		Metadata:               p.Metadata,
 	}
 }
 

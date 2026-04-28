@@ -28,6 +28,8 @@ PlanPostProcessor
 ApiExecutionPlan
 ```
 
+Correlation/technical context is propagated end-to-end as `BusinessRequest.metadata` and returned back in `ApiExecutionPlan.metadata`.
+
 ## Source of API truth
 
 The source of truth for available Wildberries API operations is:
@@ -105,6 +107,8 @@ Responsibilities:
 * expose `/a2a`;
 * parse JSON-RPC requests;
 * validate boundary-level request shape;
+* accept optional `params.metadata` object;
+* normalize `request_id` and `metadata.correlation_id` fallback rules;
 * enforce request timeout;
 * enforce max request size;
 * return JSON-RPC responses/errors;
@@ -193,7 +197,9 @@ Responsibilities:
 * build `PlannerInput`;
 * run ADK LLM agent;
 * parse LLM output;
-* normalize and validate the final plan through `PlanPostProcessor`.
+* normalize and validate the final plan through `PlanPostProcessor`;
+* preserve metadata through deterministic and ADK planning paths;
+* emit structured correlation logs (`request_id`, `correlation_id`, `session_id`, `run_id`, `tool_call_id`, `client_execution_id`) at planning milestones.
 
 Important files:
 
@@ -305,7 +311,8 @@ The LLM receives `PlannerInput`, not the whole registry.
 * selected `RegistryCandidates`;
 * prompts;
 * planning policies;
-* output contract.
+* output contract;
+* optional request metadata.
 
 The LLM must return exactly one `ApiExecutionPlan` JSON object.
 
@@ -318,10 +325,18 @@ The LLM output is never trusted directly.
 1. input normalization;
 2. binding normalization;
 3. registry identity validation;
-4. policy validation;
-5. path/query/body schema validation;
-6. response mapping normalization;
-7. final output normalization.
+4. metadata source-of-truth enforcement (input request metadata overrides LLM metadata).
+5. policy validation;
+6. path/query/body schema validation;
+7. response mapping normalization;
+8. final output normalization.
+
+Important metadata rules:
+
+* LLM-generated metadata is not trusted;
+* metadata is not used to choose WB operations;
+* metadata is not used in path/query/body bindings;
+* returned plan metadata always comes from the input `BusinessRequest`.
 
 If the plan is invalid, the service returns a blocked or needs-clarification `ApiExecutionPlan`.
 

@@ -150,6 +150,15 @@ func (h *Handler) handleMessageSend(w http.ResponseWriter, r *http.Request, rpcR
 		writeJSONRPCError(w, rpcRequest.ID, http.StatusBadRequest, -32602, err.Error())
 		return
 	}
+	h.logger.Printf("a2a request received jsonrpc_id=%v request_id=%s correlation_id=%s session_id=%s run_id=%s tool_call_id=%s client_execution_id=%s",
+		rpcRequest.ID,
+		businessRequest.RequestID,
+		metadataValue(businessRequest.Metadata, func(m *entities.RequestMetadata) string { return m.CorrelationID }),
+		metadataValue(businessRequest.Metadata, func(m *entities.RequestMetadata) string { return m.SessionID }),
+		metadataValue(businessRequest.Metadata, func(m *entities.RequestMetadata) string { return m.RunID }),
+		metadataValue(businessRequest.Metadata, func(m *entities.RequestMetadata) string { return m.ToolCallID }),
+		metadataValue(businessRequest.Metadata, func(m *entities.RequestMetadata) string { return m.ClientExecutionID }),
+	)
 
 	plan, err := h.planner.Plan(r.Context(), businessRequest)
 	if err != nil {
@@ -166,10 +175,21 @@ func (h *Handler) handleMessageSend(w http.ResponseWriter, r *http.Request, rpcR
 
 	status := ""
 	if plan != nil {
+		plan.Metadata = businessRequest.Metadata
 		status = plan.Status
 	}
 
 	h.logA2AResult(rpcRequest.ID, businessRequest.RequestID, businessRequest.Intent, status, time.Since(startedAt), nil)
+	h.logger.Printf("a2a response returned jsonrpc_id=%v request_id=%s correlation_id=%s session_id=%s run_id=%s tool_call_id=%s client_execution_id=%s status=%s",
+		rpcRequest.ID,
+		businessRequest.RequestID,
+		metadataValue(businessRequest.Metadata, func(m *entities.RequestMetadata) string { return m.CorrelationID }),
+		metadataValue(businessRequest.Metadata, func(m *entities.RequestMetadata) string { return m.SessionID }),
+		metadataValue(businessRequest.Metadata, func(m *entities.RequestMetadata) string { return m.RunID }),
+		metadataValue(businessRequest.Metadata, func(m *entities.RequestMetadata) string { return m.ToolCallID }),
+		metadataValue(businessRequest.Metadata, func(m *entities.RequestMetadata) string { return m.ClientExecutionID }),
+		status,
+	)
 
 	writeJSON(w, http.StatusOK, entities.JSONRPCResponse{
 		JSONRPC: "2.0",
@@ -241,6 +261,7 @@ func parseBusinessRequest(raw json.RawMessage) (entities.BusinessRequest, error)
 	if err := json.Unmarshal(raw, &request); err != nil {
 		return request, fmt.Errorf("invalid params: %w", err)
 	}
+	request.NormalizeCorrelationIdentifiers()
 
 	return request, nil
 }
@@ -259,6 +280,14 @@ func decodeJSONRPCRequest(r *http.Request) (entities.JSONRPCRequest, error) {
 	}
 
 	return request, nil
+}
+
+func metadataValue(metadata *entities.RequestMetadata, selector func(*entities.RequestMetadata) string) string {
+	if metadata == nil {
+		return ""
+	}
+
+	return selector(metadata)
 }
 
 func writeJSONRPCDecodeError(w http.ResponseWriter, err error) {

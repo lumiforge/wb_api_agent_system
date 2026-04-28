@@ -264,4 +264,36 @@ func TestHandleRPCValidMessageSend(t *testing.T) {
 	if plan.RequestID != "req_test_a2a" {
 		t.Fatalf("expected request_id req_test_a2a, got %s", plan.RequestID)
 	}
+	if plan.Metadata == nil || plan.Metadata.CorrelationID != "req_test_a2a" {
+		t.Fatalf("expected metadata.correlation_id=req_test_a2a, got %#v", plan.Metadata)
+	}
+}
+
+func TestParseBusinessRequestAcceptsOptionalMetadataObject(t *testing.T) {
+	request, err := parseBusinessRequest(json.RawMessage(`{
+		"request_id": "req_meta",
+		"marketplace": "wildberries",
+		"natural_language_request": "Get stocks",
+		"metadata": {"session_id": "sess_1"}
+	}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if request.Metadata == nil || request.Metadata.SessionID != "sess_1" {
+		t.Fatalf("expected metadata session_id sess_1, got %#v", request.Metadata)
+	}
+}
+
+func TestParseBusinessRequestCorrelationFallbackFromMetadata(t *testing.T) {
+	request, err := parseBusinessRequest(json.RawMessage(`{
+		"marketplace": "wildberries",
+		"natural_language_request": "Get stocks",
+		"metadata": {"correlation_id": "corr_only"}
+	}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if request.RequestID != "corr_only" {
+		t.Fatalf("expected request_id corr_only, got %q", request.RequestID)
+	}
 }

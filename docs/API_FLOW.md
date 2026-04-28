@@ -42,6 +42,15 @@ Example:
       "from": "2026-03-26",
       "to": "2026-04-26"
     },
+    "metadata": {
+      "correlation_id": "corr_20260426_000004",
+      "session_id": "sess_001",
+      "run_id": "run_001",
+      "tool_call_id": "call_001",
+      "client_execution_id": "exec_001",
+      "user_id": "user_001",
+      "source": "sp_agent"
+    },
     "constraints": {
       "readonly_only": true,
       "no_jam_subscription": true,
@@ -85,6 +94,15 @@ Success response:
       "secrets_policy_checked": true,
       "jam_policy_checked": true,
       "errors": []
+    },
+    "metadata": {
+      "correlation_id": "corr_20260426_000004",
+      "session_id": "sess_001",
+      "run_id": "run_001",
+      "tool_call_id": "call_001",
+      "client_execution_id": "exec_001",
+      "user_id": "user_001",
+      "source": "sp_agent"
     }
   }
 }
@@ -175,6 +193,16 @@ The handler unmarshals `params` into `BusinessRequest`.
 
 Boundary parsing errors return JSON-RPC `-32602`.
 
+Metadata behavior at boundary:
+
+* `metadata` is optional;
+* `metadata` is accepted as object without deep validation of inner fields;
+* correlation normalization is applied:
+  * if `metadata.correlation_id` is empty and `request_id` exists, set `metadata.correlation_id=request_id`;
+  * if `request_id` is empty and `metadata.correlation_id` exists, set `request_id=metadata.correlation_id`;
+  * if both are empty, normal request validation behavior remains unchanged;
+  * if both are set and different, request is not blocked (business id remains `request_id`, tracing id remains `metadata.correlation_id`).
+
 ### Step 3 — Agent planning
 
 The `wb_api_agent.Agent` receives `BusinessRequest`.
@@ -224,11 +252,14 @@ The agent builds `PlannerInput`:
   "registry_candidates": [],
   "prompts": {},
   "policies": {},
-  "output_contract": "Return exactly one ApiExecutionPlan JSON object..."
+  "output_contract": "Return exactly one ApiExecutionPlan JSON object...",
+  "metadata": {}
 }
 ```
 
 This JSON is sent to ADK LLM agent.
+
+`metadata` is guaranteed in planner input JSON when present in `BusinessRequest`.
 
 ### Step 7 — ADK LLM planning
 
@@ -261,6 +292,32 @@ The post-processor validates:
 * readonly policy is respected;
 * Jam policy is respected;
 * final output references existing step outputs.
+
+Metadata behavior in post-processing:
+
+* metadata source of truth is `BusinessRequest.metadata`;
+* metadata returned by LLM is ignored/overwritten;
+* metadata does not participate in operation selection;
+* metadata is not used for path/query/body bindings.
+
+## Structured logging fields
+
+Request correlation fields included in lifecycle logs:
+
+* `request_id`
+* `correlation_id`
+* `session_id`
+* `run_id`
+* `tool_call_id`
+* `client_execution_id`
+
+Primary points:
+
+* A2A request received;
+* deterministic planner handled;
+* ADK fallback started;
+* plan post-processing completed;
+* A2A response returned.
 
 ### Step 10 — Return plan
 

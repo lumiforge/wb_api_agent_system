@@ -20,6 +20,7 @@ type ApiExecutionPlan struct {
 	FinalOutput            FinalOutput           `json:"final_output"`
 	Warnings               []PlanWarning         `json:"warnings"`
 	Validation             PlanValidation        `json:"validation"`
+	Metadata               *RequestMetadata      `json:"metadata,omitempty"`
 }
 
 type InputValue struct {
@@ -204,6 +205,7 @@ func NewNeedsClarificationPlan(request BusinessRequest, questions []string) *Api
 			JamPolicyChecked:      false,
 			Errors:                []string{},
 		},
+		Metadata: request.Metadata,
 	}
 }
 func NewBlockedPlan(request BusinessRequest, blockReason string, warnings []PlanWarning) *ApiExecutionPlan {
@@ -248,6 +250,7 @@ func NewBlockedPlan(request BusinessRequest, blockReason string, warnings []Plan
 			JamPolicyChecked:      request.Constraints.NoJamSubscription,
 			Errors:                []string{blockReason},
 		},
+		Metadata: request.Metadata,
 	}
 }
 
@@ -293,6 +296,7 @@ func NewPlanningNotImplementedPlan(request BusinessRequest) *ApiExecutionPlan {
 			JamPolicyChecked:      request.Constraints.NoJamSubscription,
 			Errors:                []string{},
 		},
+		Metadata: request.Metadata,
 	}
 }
 
@@ -420,6 +424,7 @@ func NewSellerWarehouseStocksPlan(
 			JamPolicyChecked:      request.Constraints.NoJamSubscription,
 			Errors:                []string{},
 		},
+		Metadata: request.Metadata,
 	}
 }
 
@@ -465,6 +470,7 @@ func NewLLMPlanningNotImplementedPlan(request BusinessRequest, candidates []WBRe
 			JamPolicyChecked:      request.Constraints.NoJamSubscription,
 			Errors:                []string{},
 		},
+		Metadata: request.Metadata,
 	}
 }
 
@@ -537,5 +543,6 @@ func NewRegistryValidatedNeedsClarificationPlan(
 			JamPolicyChecked:      request.Constraints.NoJamSubscription,
 			Errors:                []string{},
 		},
+		Metadata: request.Metadata,
 	}
 }
