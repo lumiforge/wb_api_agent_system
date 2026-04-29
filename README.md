@@ -1,175 +1,249 @@
-До production осталось примерно 8 этапов.
+Агентская архитектура:
 
-## 1. Жёсткая валидация `ApiExecutionPlan`
+```text
+BusinessRequest
+  ↓
+wb_api_agent.Agent
+  ↓
+operation retrieval
+  ↓
+ADK operation selector
+  ↓
+registry operation resolver
+  ↓
+ApiPlanComposer
+  ↓
+PlanPostProcessor
+  ↓
+ApiExecutionPlan
+```
 
-Сейчас post-validator уже есть, но его нужно усилить:
+Ключевая идея: **LLM больше не строит план целиком**. Он только выбирает операции. Исполняемый `ApiExecutionPlan` строится детерминированным Go-кодом. Это уже отражено в актуализированной архитектуре: selector должен вернуть operation selection result, а не полный executable API plan. 
 
-* проверять все `operation_id` строго по registry;
-* запрещать лишние path/query/body поля, которых нет в schema;
-* проверять required body/query/path fields;
-* проверять `readonly_only`, Jam, secrets;
-* проверять `max_steps`;
-* проверять, что `ready` plan реально исполняемый;
-* для write-операций автоматически ставить `requires_approval=true`.
+## 1. `wb_api_agent.Agent` — оркестратор
 
-## 2. Нормальный formatter вместо fallback-логики
+Это главный агентский процесс. Он не "думает" сам, а управляет пайплайном:
 
-Сейчас мы частично достраиваем:
+```text
+получил BusinessRequest
+  ↓
+попробовал deterministic planner
+  ↓
+если не handled — пошёл в registry retrieval
+  ↓
+передал candidates в ADK selector
+  ↓
+получил выбранные operation_id
+  ↓
+зарезолвил их из registry
+  ↓
+отдал в ApiPlanComposer
+  ↓
+прогнал post-processing
+```
+
+То есть `Agent` — это coordinator между deterministic path, retrieval, LLM selector и composer.
+
+## 2. Deterministic planner — быстрый bypass для известных сценариев
+
+Сначала агент пробует deterministic planner.
+
+```text
+BusinessRequest
+  ↓
+deterministic_planner
+  ↓
+если сценарий известен → готовый ApiExecutionPlan
+  ↓
+если нет → handled=false
+```
+
+Он нужен для стабильных кейсов, где LLM вообще не нужен. Например текущий known scenario:
+
+```text
+get_seller_warehouse_stocks
+```
+
+Если deterministic planner справился — ADK selector не вызывается.
+
+## 3. Operation retrieval — подготовка кандидатов для агента
+
+Если deterministic planner не справился, агент ищет подходящие операции в registry.
+
+Retrieval не выбирает финальную операцию. Он только делает bounded candidate set:
+
+```text
+BusinessRequest text
+  ↓
+lexical retrieval
+  ↓
+optional semantic candidate expansion
+  ↓
+merge
+  ↓
+deterministic ranking
+  ↓
+top registry candidates
+```
+
+Semantic retrieval, если включён, только добавляет candidates. Он не принимает решение и не заменяет registry.
+
+## 4. ADK operation selector — единственный LLM-шаг
+
+Это LLM-агент, но его роль сильно ограничена.
+
+Он получает:
+
+```text
+BusinessRequest
+registry candidates
+selection policy
+OperationSelectionPlan contract
+```
+
+Он должен вернуть не HTTP-план, а что-то уровня:
 
 ```json
-"stocks": "$.stocks"
-"sales": "$"
+{
+  "status": "selected",
+  "selected_operations": [
+    {
+      "operation_id": "generated_post_api_v3_stocks_warehouseid",
+      "purpose": "..."
+    }
+  ],
+  "missing_inputs": []
+}
 ```
 
-Нужно сделать полноценный formatter:
-
-* строить `response_mapping.outputs` из response schema;
-* строить `final_output.fields`;
-* добавлять transforms: join, aggregate, filter, group;
-* уметь возвращать табличный/объектный/summary output.
-
-## 3. Улучшить registry retrieval
-
-Сейчас retrieval уже рабочий, но для прода надо:
-
-* multi-intent ranking: `stocks`, `sales`, `orders`, `warehouses`, `prices`, `reports`;
-* cluster-aware candidates: не просто top-N, а top-K на каждый смысловой кластер;
-* учитывать method category, token type, subscription requirements;
-* сохранять score/debug только в логах;
-* возможно добавить FTS5 в SQLite.
-
-## 4. Разделить ADK planner и formatter
-
-Сейчас один `wb_api_planner_agent` делает всё. Лучше сделать цепочку:
+Его задача:
 
 ```text
-retriever
+понять intent пользователя
   ↓
-planner agent: выбирает операции и строит steps
+выбрать operation_id из уже найденных registry candidates
   ↓
-formatter agent/post-processor: приводит к ApiExecutionPlan schema
-  ↓
-validator
+сказать, хватает ли бизнес-входов
 ```
 
-Можно оставить один agent на раннем production, но архитектурно лучше разделить.
-
-## 5. Session / memory / compaction
-
-Конфиг для compaction уже есть, но логики ещё нет.
-
-Нужно:
-
-* хранить ADK sessions;
-* поддержать follow-up запросы;
-* compact history при больших контекстах;
-* не хранить секреты;
-* ограничить размер tool/registry context.
-
-## 6. A2A compatibility довести до нормального уровня
-
-Сейчас handler минимальный.
-
-Для production нужно:
-
-* нормальный A2A `message/send` payload parsing;
-* agent card по актуальной A2A schema;
-* task/status lifecycle, если нужно;
-* корректные JSON-RPC errors;
-* request id / trace id;
-* auth на endpoint;
-* graceful timeouts.
-
-## 7. Observability и безопасность
-
-Нужно добавить:
-
-* structured logs;
-* request_id везде;
-* latency метрики;
-* registry candidate count;
-* LLM latency/error metrics;
-* validator error metrics;
-* не логировать секреты;
-* ограничить размер логируемого planner input;
-* rate limit на HTTP endpoint.
-
-## 8. Tests
-
-Минимум перед production:
-
-* unit tests для registry loader;
-* tests для `SearchOperations`;
-* tests для deterministic planner;
-* tests для normalizer;
-* tests для validator;
-* golden tests для `ApiExecutionPlan`;
-* integration test A2A → ready plan;
-* tests для blocked/needs_clarification сценариев.
-
-## 9. Executor contract
-
-Сейчас сервис только строит план, HTTP не выполняет. Нужно чётко зафиксировать контракт для будущего executor-а:
-
-* как резолвить `input`;
-* как резолвить `executor_secret`;
-* как выполнять pagination;
-* как применять retry/rate-limit;
-* как применять `response_mapping`;
-* как применять `transforms`;
-* как возвращать final output.
-
-## 10. Production packaging
-
-Нужно:
-
-* Dockerfile;
-* env example;
-* migration strategy;
-* health/readiness endpoints;
-* CI;
-* versioning;
-* README запуска;
-* конфигурация model/baseURL/api key;
-* отдельный storage path для SQLite.
-
----
-
-Ближайший практический порядок я бы сделал такой:
+Чего он не должен делать:
 
 ```text
-1. Усилить PlanValidator
-2. Улучшить retrieval до multi-intent ranking
-3. Добавить transforms/final_output formatter
-4. Добавить tests/golden fixtures
-5. Довести A2A handler
-6. Добавить observability/security
-7. Docker/CI/deploy
+строить path/query/body
+придумывать operation_id
+придумывать headers
+придумывать retry/rate limit
+создавать ApiExecutionPlan
 ```
 
-Самый важный следующий шаг — **усилить PlanValidator**, потому что именно он отделяет “LLM что-то сгенерировала” от “план безопасно можно отдать executor-у”.
+## 5. Registry operation resolver — защита от галлюцинаций selector-а
 
+После selector-а выбранные `operation_id` ещё не считаются истинными.
 
+Resolver делает:
 
-------
-Нормализовать JSON-RPC ошибки
-unknown method;
-invalid JSON;
-invalid params;
-internal error;
-method not allowed.
-Добавить request size limit
-чтобы нельзя было отправить огромный payload.
-Добавить context timeout на /a2a
-например 60–120 секунд, чтобы ADK/LLM вызов не висел бесконечно.
-Добавить request_id в логи
-JSON-RPC id;
-business request_id;
-latency;
-result status.
-Покрыть handler тестами
-/healthz;
-unknown method;
-valid deterministic request;
-invalid JSON;
-A2A response shape.
+```text
+selected operation_id
+  ↓
+GetOperation из registry source-of-truth
+  ↓
+если нет такой операции — ошибка/blocked
+  ↓
+если есть — отдаём полную registry metadata дальше
+```
+
+Это важный слой: даже если LLM написал мусорный operation_id, дальше он не пройдёт.
+
+## 6. `ApiPlanComposer` — настоящий строитель плана
+
+Это главный deterministic brain после выбора операции.
+
+Он берёт:
+
+```text
+BusinessRequest
+resolved registry operations
+schema metadata
+policy constraints
+```
+
+И строит:
+
+```text
+ApiExecutionPlan
+```
+
+Именно composer решает:
+
+```text
+method
+server_url
+path_template
+path_params bindings
+query_params bindings
+headers
+body
+content_type
+pagination
+retry_policy
+rate_limit_policy
+response_mapping
+final_output
+validation metadata
+```
+
+То есть **LLM выбирает “что вызвать”, composer строит “как вызвать”**.
+
+## 7. `PlanPostProcessor` — финальная нормализация результата
+
+После composer-а план всё равно прогоняется через post-processing:
+
+```text
+input normalization
+binding normalization
+registry identity validation
+policy validation
+schema validation
+response mapping normalization
+final output normalization
+validation metadata normalization
+```
+
+С агентской точки зрения это safety net после построения плана.
+
+## Главная архитектурная граница
+
+Самая важная граница такая:
+
+```text
+LLM selector:
+  выбирает operation_id
+
+Go composer:
+  строит executable plan
+```
+
+Это правильная архитектура, потому что LLM используется только там, где он полезен: понять человеческий запрос и сопоставить его с кандидатами. Всё, что должно быть точным, проверяемым и воспроизводимым, делает Go-код.
+
+## Где сейчас слабое место
+
+Слабое место уже проявилось в smoke test:
+
+```text
+Покажи остатки товаров на складе 12345 по chrtIds...
+```
+
+Selector выбрал clarification, хотя данные были переданы.
+
+Это не надо чинить prompt-алиасами. Правильное место фикса — deterministic normalization/extraction business inputs до selector/composer:
+
+```text
+"склад 123 товар 5"
+  ↓
+warehouse_id = 123
+chrt_ids = [5]
+```
+
+Тогда selector получает уже нормализованный `BusinessRequest`, а не пытается сам угадывать, что такое “товар 5”.
+
+Итог: агентская архитектура почти правильная. Последний крупный агентский недочёт — не LLM/retrieval, а слой **business input extraction/normalization** перед operation selection/composition.

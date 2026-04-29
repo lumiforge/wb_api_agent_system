@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"os"
 	"time"
 
 	adksession "google.golang.org/adk/session"
@@ -17,16 +16,17 @@ import (
 	"github.com/lumiforge/wb_api_agent_system/internal/agents/wb_api_agent"
 	"github.com/lumiforge/wb_api_agent_system/internal/config"
 	"github.com/lumiforge/wb_api_agent_system/internal/services/a2a"
-	"github.com/lumiforge/wb_api_agent_system/internal/services/deterministic_planner"
 	"github.com/lumiforge/wb_api_agent_system/internal/services/wb_registry"
+	"github.com/lumiforge/wb_api_agent_system/internal/services/wb_registry_retrieval"
 )
 
 // PURPOSE: Wires infrastructure, agents, services, and the HTTP server into one runnable application.
 type Application struct {
-	cfg            *config.Config
-	logger         *log.Logger
-	httpServer     *http.Server
-	sessionService adksession.Service
+	cfg                    *config.Config
+	logger                 *log.Logger
+	httpServer             *http.Server
+	sessionService         adksession.Service
+	registryEmbeddingStore *sqliteadapter.WBRegistryEmbeddingStore
 }
 
 func New(cfg *config.Config, logger *log.Logger) (*Application, error) {
@@ -50,12 +50,100 @@ func New(cfg *config.Config, logger *log.Logger) (*Application, error) {
 		}
 	}
 
+	embeddingsDB, err := sqliteadapter.NewDB(cfg.EmbeddingsSQLitePath)
+	if err != nil {
+		return nil, err
+	}
+
+	if cfg.DatabaseAutoMigrate {
+		// WHY: Registry embeddings are app-owned and must live outside ADK session storage.
+		if err := sqliteadapter.AutoMigrateWBRegistryEmbeddingStore(embeddingsDB); err != nil {
+			return nil, err
+		}
+	}
 	registryStore := sqliteadapter.NewWBRegistryStore(registryDB)
 	registryLoader := wb_registry.NewLoader(registryStore)
+
+	registryEmbeddingStore := sqliteadapter.NewWBRegistryEmbeddingStore(embeddingsDB)
+	embeddingStatusService, err := wb_registry_retrieval.NewEmbeddingIndexStatusService(wb_registry_retrieval.EmbeddingIndexStatusServiceConfig{
+		SourceStore:    registryStore,
+		EmbeddingStore: registryEmbeddingStore,
+		Model:          cfg.EmbeddingModel,
+		Dimensions:     cfg.EmbeddingDimensions,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("create registry embedding status service: %w", err)
+	}
+	embeddingClient := adkllm.NewOpenAICompatibleEmbeddingClient(
+		cfg.OpenAIBaseURL,
+		cfg.OpenAIAPIKey,
+	)
+
+	logger.Printf(
+		"WB registry embedding store ready: path=%s model=%s dimensions=%d",
+		cfg.EmbeddingsSQLitePath,
+		cfg.EmbeddingModel,
+		cfg.EmbeddingDimensions,
+	)
+
+	if cfg.EmbeddingIndexRebuildOnStartup {
+		embeddingIndexer, err := wb_registry_retrieval.NewEmbeddingIndexer(wb_registry_retrieval.EmbeddingIndexerConfig{
+			SourceStore:     registryStore,
+			EmbeddingStore:  registryEmbeddingStore,
+			EmbeddingClient: embeddingClient,
+			Model:           cfg.EmbeddingModel,
+			Dimensions:      cfg.EmbeddingDimensions,
+			BatchSize:       64,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("create registry embedding indexer: %w", err)
+		}
+
+		// WHY: Embedding rebuild is explicit opt-in because it performs external model calls at startup.
+		indexResult, err := embeddingIndexer.Rebuild(context.Background())
+		if err != nil {
+			return nil, fmt.Errorf("rebuild registry embedding index: %w", err)
+		}
+
+		logger.Printf(
+			"WB registry embedding index rebuilt: scanned=%d created=%d skipped=%d model=%s dimensions=%d",
+			indexResult.OperationsScanned,
+			indexResult.EmbeddingsCreated,
+			indexResult.EmbeddingsSkipped,
+			cfg.EmbeddingModel,
+			cfg.EmbeddingDimensions,
+		)
+	}
 
 	loadResult, err := registryLoader.LoadFromDir(context.Background(), cfg.WBRegistryPath)
 	if err != nil {
 		return nil, err
+	}
+	var semanticRetriever wb_registry_retrieval.SemanticCandidateRetriever
+
+	if cfg.SemanticRetrievalEnabled {
+		semanticOperationRetriever, err := wb_registry_retrieval.NewSemanticOperationRetriever(wb_registry_retrieval.SemanticOperationRetrieverConfig{
+			SourceStore:     registryStore,
+			EmbeddingStore:  registryEmbeddingStore,
+			EmbeddingClient: embeddingClient,
+			Model:           cfg.EmbeddingModel,
+			Dimensions:      cfg.EmbeddingDimensions,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("create semantic operation retriever: %w", err)
+		}
+
+		semanticRetriever = semanticOperationRetriever
+	}
+
+	registryRetriever, err := wb_registry_retrieval.New(wb_registry_retrieval.ServiceConfig{
+		Store:                    registryStore,
+		SemanticRetriever:        semanticRetriever,
+		SemanticExpansionEnabled: cfg.SemanticRetrievalEnabled,
+		SemanticExpansionLimit:   cfg.SemanticRetrievalLimit,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("create registry retriever: %w", err)
 	}
 
 	logger.Printf(
@@ -70,55 +158,27 @@ func New(cfg *config.Config, logger *log.Logger) (*Application, error) {
 		cfg.WBRegistryPath,
 	)
 
-	systemPrompt, err := os.ReadFile(cfg.SystemPromptPath)
-	if err != nil {
-		return nil, fmt.Errorf("read system prompt: %w", err)
-	}
-
-	planPrompt, err := os.ReadFile(cfg.PlanPromptPath)
-	if err != nil {
-		return nil, fmt.Errorf("read plan prompt: %w", err)
-	}
-
-	explorePrompt, err := os.ReadFile(cfg.ExplorePromptPath)
-	if err != nil {
-		return nil, fmt.Errorf("read explore prompt: %w", err)
-	}
-
-	generalPrompt, err := os.ReadFile(cfg.GeneralPromptPath)
-	if err != nil {
-		return nil, fmt.Errorf("read general prompt: %w", err)
-	}
-
-	deterministicPlanner := deterministic_planner.New(registryStore)
-
 	llmModel := adkllm.NewOpenAICompatibleModel(
 		cfg.ModelName,
 		cfg.OpenAIBaseURL,
 		cfg.OpenAIAPIKey,
 	)
-
 	plannerAgent, err := wb_api_agent.New(wb_api_agent.Config{
-		Registry:             registryStore,
-		DeterministicPlanner: deterministicPlanner,
-		SessionService:       sessionService,
-		Model:                llmModel,
-		Logger:               logger,
-		SystemPrompt:         string(systemPrompt),
-		PlanPrompt:           string(planPrompt),
-		ExplorePrompt:        string(explorePrompt),
-		GeneralPrompt:        string(generalPrompt),
-		ModelName:            cfg.ModelName,
-		DebugLogPlannerInput: cfg.DebugLogPlannerInput,
+		Registry:       registryRetriever,
+		SessionService: sessionService,
+		Model:          llmModel,
+		Logger:         logger,
+		ModelName:      cfg.ModelName,
 	})
 	if err != nil {
 		return nil, err
 	}
 
 	a2aHandler := a2a.NewHandler(a2a.Config{
-		PublicBaseURL: cfg.PublicBaseURL,
-		Logger:        logger,
-	}, plannerAgent, registryStore)
+		PublicBaseURL:                cfg.PublicBaseURL,
+		Logger:                       logger,
+		EmbeddingIndexStatusProvider: embeddingStatusService,
+	}, plannerAgent, registryRetriever)
 
 	mux := http.NewServeMux()
 
@@ -127,6 +187,7 @@ func New(cfg *config.Config, logger *log.Logger) (*Application, error) {
 	mux.HandleFunc("/a2a", a2aHandler.HandleRPC)
 	mux.HandleFunc("/debug/registry/stats", a2aHandler.HandleRegistryStats)
 	mux.HandleFunc("/debug/registry/search", a2aHandler.HandleRegistrySearch)
+	mux.HandleFunc("/debug/registry/embeddings/status", a2aHandler.HandleRegistryEmbeddingsStatus)
 	mux.HandleFunc("/.well-known/agent.json", a2aHandler.HandleAgentCard)
 	mux.HandleFunc("/.well-known/agent-card.json", a2aHandler.HandleAgentCard)
 
@@ -137,10 +198,11 @@ func New(cfg *config.Config, logger *log.Logger) (*Application, error) {
 	}
 
 	return &Application{
-		cfg:            cfg,
-		logger:         logger,
-		httpServer:     httpServer,
-		sessionService: sessionService,
+		cfg:                    cfg,
+		logger:                 logger,
+		httpServer:             httpServer,
+		sessionService:         sessionService,
+		registryEmbeddingStore: registryEmbeddingStore,
 	}, nil
 }
 

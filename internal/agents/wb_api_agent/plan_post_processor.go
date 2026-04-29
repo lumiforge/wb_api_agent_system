@@ -7,7 +7,7 @@ import (
 	"github.com/lumiforge/wb_api_agent_system/internal/domain/wbregistry"
 )
 
-// PURPOSE: Applies registry validation and safe normalization to ADK-produced plans before executor handoff.
+// PURPOSE: Applies registry validation and safe deterministic normalization before executor handoff.
 type PlanPostProcessor struct {
 	registry wbregistry.Retriever
 }
@@ -43,9 +43,9 @@ func normalizeExecutionMode(plan *entities.ApiExecutionPlan) {
 		return
 	}
 
-	// WHY: ADK fallback can return an otherwise valid plan with empty execution_mode.
+	// WHY: Composed plans should set execution_mode, but boundary validation keeps the output contract explicit.
 	// Normalize before validation so a ready client-executable plan is not blocked
-	// only because the LLM omitted this technical field.
+	// only because this technical field is absent.
 	switch plan.Status {
 	case "ready":
 		plan.ExecutionMode = "automatic"

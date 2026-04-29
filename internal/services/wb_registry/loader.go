@@ -19,7 +19,7 @@ type OperationStore interface {
 	ReplaceAll(ctx context.Context, operations []entities.WBRegistryOperation) error
 }
 
-// PURPOSE: Loads Wildberries OpenAPI YAML files and indexes operations for planner retrieval.
+// PURPOSE: Loads Wildberries OpenAPI YAML files into the registry source-of-record store.
 type Loader struct {
 	store OperationStore
 }

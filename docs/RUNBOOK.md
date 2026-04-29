@@ -326,22 +326,109 @@ SP_AGENT_DEBUG_LOG_PLANNER_INPUT=true
 in production.
 EOF
 
-````
+
 
 ## 4. После создания проверь
 
 ```bash
 go test ./...
-````
+```
 
-Документация теперь покрывает:
+## Registry embeddings and semantic retrieval
 
-* архитектуру;
-* путь данных от OpenAPI YAML до LLM;
-* A2A flow;
-* registry retrieval;
-* validation;
-* запуск;
-* тесты;
-* debugging;
-* production checklist.
+Registry embeddings are stored in a dedicated SQLite database, separate from ADK session storage.
+
+### Environment variables
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `SP_AGENT_EMBEDDINGS_SQLITE_PATH` | `wb_api_agent_embeddings.db` | SQLite database path for registry operation embeddings |
+| `SP_AGENT_EMBEDDING_MODEL` | `text-embedding-3-small` | Embedding model used for registry operation documents and user queries |
+| `SP_AGENT_EMBEDDING_DIMENSIONS` | `1536` | Expected vector dimensions |
+| `SP_AGENT_EMBEDDING_INDEX_REBUILD_ON_STARTUP` | `false` | Rebuild/catch up registry embeddings during application startup |
+| `SP_AGENT_SEMANTIC_RETRIEVAL_ENABLED` | `false` | Enable semantic candidate expansion during registry retrieval |
+| `SP_AGENT_SEMANTIC_RETRIEVAL_LIMIT` | `20` | Maximum semantic candidates used for expansion |
+
+### Check embedding index coverage
+
+```bash
+curl http://localhost:8080/debug/registry/embeddings/status
+```
+
+Expected response shape:
+
+```json
+{
+  "registry_operations": 420,
+  "indexed_embeddings": 420,
+  "coverage_ratio": 1,
+  "model": "text-embedding-3-small",
+  "dimensions": 1536
+}
+```
+
+This endpoint is read-only. It does not rebuild the index, does not call the embedding provider, and does not expose vectors.
+
+### Rebuild embeddings explicitly
+
+Run the application once with rebuild enabled:
+
+```bash
+SP_AGENT_EMBEDDING_INDEX_REBUILD_ON_STARTUP=true go run ./cmd
+```
+
+After startup completes, check coverage:
+
+```bash
+curl http://localhost:8080/debug/registry/embeddings/status
+```
+
+Do not enable semantic retrieval until `coverage_ratio` is close to `1`.
+
+### Enable semantic retrieval
+
+Semantic retrieval only expands registry candidates. It does not replace deterministic ranking and does not become source of truth.
+
+Enable it only after the embedding index is populated:
+
+```bash
+SP_AGENT_SEMANTIC_RETRIEVAL_ENABLED=true go run ./cmd
+```
+
+Use registry search diagnostics to confirm candidate expansion:
+
+```bash
+curl "http://localhost:8080/debug/registry/search?q=остатки%20товаров&limit=10&readonly_only=true&exclude_jam=true"
+```
+
+The response should include:
+
+```json
+{
+  "diagnostics": {
+    "lexical_candidates": 10,
+    "semantic_candidates": 20,
+    "merged_candidates": 25,
+    "returned_candidates": 10,
+    "semantic_expansion_enabled": true
+  }
+}
+```
+
+### Safe production order
+
+1. Start with semantic retrieval disabled.
+2. Rebuild embeddings explicitly.
+3. Verify embedding coverage.
+4. Enable semantic retrieval.
+5. Verify registry search diagnostics.
+6. Keep rebuild disabled during normal runtime.
+
+
+
+Потом:
+
+```bash
+gofmt -w internal/services/a2a/handler.go internal/app/app.go
+go test ./...
+```

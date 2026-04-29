@@ -9,6 +9,7 @@ import (
 	"github.com/lumiforge/wb_api_agent_system/internal/domain/entities"
 )
 
+// PURPOSE: Validates registry-backed executable plans and separates blocking contract errors from recoverable clarification needs.
 func (p *PlanPostProcessor) validatePlan(
 	ctx context.Context,
 	request entities.BusinessRequest,
@@ -16,10 +17,10 @@ func (p *PlanPostProcessor) validatePlan(
 ) (*entities.ApiExecutionPlan, error) {
 	if plan.Status == "needs_clarification" {
 		if len(plan.ClarifyingQuestions) == 0 {
-			return entities.NewBlockedPlan(request, "adk_planner_returned_empty_clarification", []entities.PlanWarning{
+			return entities.NewBlockedPlan(request, "plan_returned_empty_clarification", []entities.PlanWarning{
 				{
-					Code:    "invalid_adk_output",
-					Message: "ADK returned status=needs_clarification without clarifying_questions.",
+					Code:    "invalid_plan_contract",
+					Message: "Plan returned status=needs_clarification without clarifying_questions.",
 				},
 			}), nil
 		}
@@ -29,10 +30,10 @@ func (p *PlanPostProcessor) validatePlan(
 
 	if plan.Status == "blocked" {
 		if plan.BlockReason == "" {
-			return entities.NewBlockedPlan(request, "adk_planner_returned_empty_block_reason", []entities.PlanWarning{
+			return entities.NewBlockedPlan(request, "plan_returned_empty_block_reason", []entities.PlanWarning{
 				{
-					Code:    "invalid_adk_output",
-					Message: "ADK returned status=blocked without block_reason.",
+					Code:    "invalid_plan_contract",
+					Message: "Plan returned status=blocked without block_reason.",
 				},
 			}), nil
 		}
@@ -41,10 +42,10 @@ func (p *PlanPostProcessor) validatePlan(
 	}
 
 	if plan.Status != "ready" {
-		return entities.NewBlockedPlan(request, "adk_planner_returned_unknown_status", []entities.PlanWarning{
+		return entities.NewBlockedPlan(request, "plan_returned_unknown_status", []entities.PlanWarning{
 			{
-				Code:    "invalid_adk_output",
-				Message: "ADK returned unknown status: " + plan.Status,
+				Code:    "invalid_plan_contract",
+				Message: "Plan returned unknown status: " + plan.Status,
 			},
 		}), nil
 	}
@@ -82,12 +83,20 @@ func (p *PlanPostProcessor) validatePlan(
 		blockErrors = append(blockErrors, validateUnknownValueBindings(step.StepID, "path_params", step.Request.PathParams, pathParams)...)
 		blockErrors = append(blockErrors, validateUnknownValueBindings(step.StepID, "query_params", step.Request.QueryParams, queryParams)...)
 
-		blockErrors = append(blockErrors, validateValueBindings(step.StepID, "path_params", step.Request.PathParams, plan.Inputs)...)
-		blockErrors = append(blockErrors, validateValueBindings(step.StepID, "query_params", step.Request.QueryParams, plan.Inputs)...)
+		pathBindingValidation := validateValueBindings(step.StepID, "path_params", step.Request.PathParams, plan.Inputs)
+		blockErrors = append(blockErrors, pathBindingValidation.BlockErrors...)
+		clarifyingQuestions = append(clarifyingQuestions, pathBindingValidation.ClarifyingQuestions...)
+
+		queryBindingValidation := validateValueBindings(step.StepID, "query_params", step.Request.QueryParams, plan.Inputs)
+		blockErrors = append(blockErrors, queryBindingValidation.BlockErrors...)
+		clarifyingQuestions = append(clarifyingQuestions, queryBindingValidation.ClarifyingQuestions...)
 
 		bodyFields := requestBodyFieldNames(operation.RequestBodySchemaJSON)
 		blockErrors = append(blockErrors, validateUnknownRequestBodyFields(step.StepID, bodyFields, step.Request.Body)...)
-		blockErrors = append(blockErrors, validateRequestBodyBindings(step.StepID, step.Request.Body, plan.Inputs)...)
+
+		bodyBindingValidation := validateRequestBodyBindings(step.StepID, step.Request.Body, plan.Inputs)
+		blockErrors = append(blockErrors, bodyBindingValidation.BlockErrors...)
+		clarifyingQuestions = append(clarifyingQuestions, bodyBindingValidation.ClarifyingQuestions...)
 
 		clarifyingQuestions = append(
 			clarifyingQuestions,
@@ -112,7 +121,7 @@ func (p *PlanPostProcessor) validatePlan(
 	blockErrors = append(blockErrors, validateFinalOutput(*plan)...)
 
 	if len(blockErrors) > 0 {
-		return entities.NewBlockedPlan(request, "adk_plan_failed_registry_validation", append(plan.Warnings, entities.PlanWarning{
+		return entities.NewBlockedPlan(request, "plan_failed_registry_validation", append(plan.Warnings, entities.PlanWarning{
 			Code:    "registry_validation_errors",
 			Message: strings.Join(blockErrors, "; "),
 		})), nil
@@ -142,17 +151,15 @@ func validateReadyPlanShape(request entities.BusinessRequest, plan entities.ApiE
 	if plan.Marketplace != "wildberries" {
 		errors = append(errors, "marketplace must be wildberries")
 	}
-	if plan.Intent == "" {
-		errors = append(errors, "intent is empty")
-	}
 	if plan.RiskLevel == "" {
 		errors = append(errors, "risk_level is empty")
 	}
 	if plan.ExecutionMode == "" {
 		errors = append(errors, "execution_mode is empty")
 	}
-	if len(plan.Inputs) == 0 {
-		errors = append(errors, "inputs is empty")
+	if plan.Inputs == nil {
+		// WHY: Empty input maps are valid for defaulted operations; nil breaks deterministic binding validation.
+		errors = append(errors, "inputs must be an object")
 	}
 	if len(plan.Steps) == 0 {
 		errors = append(errors, "ready plan must contain at least one step")
@@ -325,19 +332,27 @@ func validateUnknownValueBindings(
 	return errors
 }
 
+// PURPOSE: Carries validator outcomes without mixing invalid plan contracts with missing user-provided business data.
+type bindingValidationResult struct {
+	BlockErrors         []string
+	ClarifyingQuestions []string
+}
+
 func validateValueBindings(
 	stepID string,
 	fieldName string,
 	values map[string]entities.ValueBinding,
 	inputs map[string]entities.InputValue,
-) []string {
-	errors := make([]string, 0)
+) bindingValidationResult {
+	result := newBindingValidationResult()
 
 	for name, binding := range values {
-		errors = append(errors, validateValueBinding(stepID, fieldName+"."+name, binding, inputs)...)
+		bindingResult := validateValueBinding(stepID, fieldName+"."+name, binding, inputs)
+		result.BlockErrors = append(result.BlockErrors, bindingResult.BlockErrors...)
+		result.ClarifyingQuestions = append(result.ClarifyingQuestions, bindingResult.ClarifyingQuestions...)
 	}
 
-	return errors
+	return result
 }
 
 func validateValueBinding(
@@ -345,42 +360,56 @@ func validateValueBinding(
 	name string,
 	binding entities.ValueBinding,
 	inputs map[string]entities.InputValue,
-) []string {
-	errors := make([]string, 0)
+) bindingValidationResult {
+	result := newBindingValidationResult()
 
 	switch binding.Source {
 	case "input":
 		if binding.InputName == "" {
-			errors = append(errors, fmt.Sprintf("step %s binding %s has source=input but empty input_name", stepID, name))
-			return errors
+			result.BlockErrors = append(result.BlockErrors, fmt.Sprintf("step %s binding %s has source=input but empty input_name", stepID, name))
+			return result
 		}
 
 		input, ok := inputs[binding.InputName]
 		if !ok {
-			errors = append(errors, fmt.Sprintf("step %s binding %s references missing input %s", stepID, name, binding.InputName))
-			return errors
+			if binding.Required {
+				// WHY: Missing required source=input values are recoverable by asking the user for business data.
+				result.ClarifyingQuestions = append(result.ClarifyingQuestions, missingInputQuestion(binding.InputName))
+				return result
+			}
+
+			result.BlockErrors = append(result.BlockErrors, fmt.Sprintf("step %s binding %s references missing optional input %s", stepID, name, binding.InputName))
+			return result
 		}
 
 		if binding.Required && isEmptyInputValue(input.Value) {
-			errors = append(errors, fmt.Sprintf("step %s binding %s references empty required input %s", stepID, name, binding.InputName))
+			// WHY: Empty required business inputs are recoverable and must not be treated as registry validation failures.
+			result.ClarifyingQuestions = append(result.ClarifyingQuestions, missingInputQuestion(binding.InputName))
 		}
 	case "static":
 		if binding.Required && isEmptyInputValue(binding.Value) {
-			errors = append(errors, fmt.Sprintf("step %s binding %s has empty required static value", stepID, name))
+			result.BlockErrors = append(result.BlockErrors, fmt.Sprintf("step %s binding %s has empty required static value", stepID, name))
 		}
 	case "step_output":
 		if binding.StepID == "" || binding.OutputName == "" {
-			errors = append(errors, fmt.Sprintf("step %s binding %s has invalid step_output binding", stepID, name))
+			result.BlockErrors = append(result.BlockErrors, fmt.Sprintf("step %s binding %s has invalid step_output binding", stepID, name))
 		}
 	case "executor_secret":
 		if binding.SecretName == "" {
-			errors = append(errors, fmt.Sprintf("step %s binding %s has empty secret_name", stepID, name))
+			result.BlockErrors = append(result.BlockErrors, fmt.Sprintf("step %s binding %s has empty secret_name", stepID, name))
 		}
 	default:
-		errors = append(errors, fmt.Sprintf("step %s binding %s has unsupported source %s", stepID, name, binding.Source))
+		result.BlockErrors = append(result.BlockErrors, fmt.Sprintf("step %s binding %s has unsupported source %s", stepID, name, binding.Source))
 	}
 
-	return errors
+	return result
+}
+
+func newBindingValidationResult() bindingValidationResult {
+	return bindingValidationResult{
+		BlockErrors:         []string{},
+		ClarifyingQuestions: []string{},
+	}
 }
 
 func validateUnknownRequestBodyFields(stepID string, allowed map[string]bool, body any) []string {
@@ -410,13 +439,13 @@ func validateRequestBodyBindings(
 	stepID string,
 	body any,
 	inputs map[string]entities.InputValue,
-) []string {
+) bindingValidationResult {
+	result := newBindingValidationResult()
+
 	bodyMap, ok := body.(map[string]any)
 	if !ok {
-		return []string{}
+		return result
 	}
-
-	errors := make([]string, 0)
 
 	for name, value := range bodyMap {
 		binding, ok := bodyValueBinding(value)
@@ -424,10 +453,12 @@ func validateRequestBodyBindings(
 			continue
 		}
 
-		errors = append(errors, validateValueBinding(stepID, "body."+name, binding, inputs)...)
+		bindingResult := validateValueBinding(stepID, "body."+name, binding, inputs)
+		result.BlockErrors = append(result.BlockErrors, bindingResult.BlockErrors...)
+		result.ClarifyingQuestions = append(result.ClarifyingQuestions, bindingResult.ClarifyingQuestions...)
 	}
 
-	return errors
+	return result
 }
 
 func validateRequiredRequestBody(
@@ -443,7 +474,7 @@ func validateRequiredRequestBody(
 
 	bodyMap, ok := body.(map[string]any)
 	if !ok {
-		return []string{fmt.Sprintf("Provide request body fields for step %s: %s.", stepID, strings.Join(requiredFields, ", "))}
+		return []string{missingRequestBodyFieldsQuestion(requiredFields)}
 	}
 
 	questions := make([]string, 0)
@@ -451,7 +482,8 @@ func validateRequiredRequestBody(
 	for _, field := range requiredFields {
 		value, ok := bodyMap[field]
 		if !ok || isEmptyBodyValue(value, inputs) {
-			questions = append(questions, fmt.Sprintf("Provide entities.%s as a non-empty value.", camelToSnake(field)))
+			// WHY: User-facing clarification must not expose internal normalized entity names.
+			questions = append(questions, missingRequestBodyFieldQuestion(field))
 		}
 	}
 
@@ -717,20 +749,6 @@ func pathTemplateParamNames(pathTemplate string) []string {
 	}
 
 	return names
-}
-
-func camelToSnake(value string) string {
-	var builder strings.Builder
-
-	for i, r := range value {
-		if i > 0 && r >= 'A' && r <= 'Z' {
-			builder.WriteRune('_')
-		}
-
-		builder.WriteRune(r)
-	}
-
-	return strings.ToLower(builder.String())
 }
 
 func dedupeStrings(values []string) []string {

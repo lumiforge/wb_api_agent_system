@@ -15,11 +15,18 @@ import (
 	"github.com/lumiforge/wb_api_agent_system/internal/domain/entities"
 	"github.com/lumiforge/wb_api_agent_system/internal/domain/llm"
 	"github.com/lumiforge/wb_api_agent_system/internal/domain/wbregistry"
+	"github.com/lumiforge/wb_api_agent_system/internal/services/wb_registry_retrieval"
 )
 
+// PURPOSE: Exposes read-only embedding index status to debug HTTP handlers without allowing rebuilds.
+type EmbeddingIndexStatusProvider interface {
+	Status(ctx context.Context) (wb_registry_retrieval.EmbeddingIndexStatus, error)
+}
+
 type Config struct {
-	PublicBaseURL string
-	Logger        *log.Logger
+	PublicBaseURL                string
+	Logger                       *log.Logger
+	EmbeddingIndexStatusProvider EmbeddingIndexStatusProvider
 }
 
 const (
@@ -57,6 +64,26 @@ func (h *Handler) HandleHealth(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
+func (h *Handler) HandleRegistryEmbeddingsStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSONRPCError(w, nil, http.StatusMethodNotAllowed, -32601, "method not allowed")
+		return
+	}
+
+	if h.cfg.EmbeddingIndexStatusProvider == nil {
+		writeJSONRPCError(w, nil, http.StatusNotFound, -32601, "embedding index status is not configured")
+		return
+	}
+
+	status, err := h.cfg.EmbeddingIndexStatusProvider.Status(r.Context())
+	if err != nil {
+		writeJSONRPCError(w, nil, http.StatusInternalServerError, -32603, err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, status)
+}
+
 func (h *Handler) HandleRegistryStats(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSONRPCError(w, nil, http.StatusMethodNotAllowed, -32601, "method not allowed")
@@ -80,12 +107,25 @@ func (h *Handler) HandleRegistrySearch(w http.ResponseWriter, r *http.Request) {
 
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 
-	operations, err := h.registry.SearchOperations(r.Context(), wbregistry.SearchQuery{
+	searchQuery := wbregistry.SearchQuery{
 		Query:        r.URL.Query().Get("q"),
 		Limit:        limit,
 		ReadonlyOnly: r.URL.Query().Get("readonly_only") == "true",
 		ExcludeJam:   r.URL.Query().Get("exclude_jam") == "true",
-	})
+	}
+
+	if diagnosticRegistry, ok := h.registry.(wbregistry.DiagnosticRetriever); ok {
+		result, err := diagnosticRegistry.SearchOperationsWithDiagnostics(r.Context(), searchQuery)
+		if err != nil {
+			writeJSONRPCError(w, nil, http.StatusInternalServerError, -32603, err.Error())
+			return
+		}
+
+		writeJSON(w, http.StatusOK, result)
+		return
+	}
+
+	operations, err := h.registry.SearchOperations(r.Context(), searchQuery)
 	if err != nil {
 		writeJSONRPCError(w, nil, http.StatusInternalServerError, -32603, err.Error())
 		return
@@ -197,6 +237,7 @@ func (h *Handler) handleMessageSend(w http.ResponseWriter, r *http.Request, rpcR
 		Result:  plan,
 	})
 }
+
 func (h *Handler) logA2AResult(
 	jsonrpcID any,
 	businessRequestID string,

@@ -12,16 +12,17 @@ type Config struct {
 	OpenAIBaseURL       string
 	WBRegistryPath      string
 	ModelName           string
-	SystemPromptPath    string
-	PlanPromptPath      string
-	ExplorePromptPath   string
-	GeneralPromptPath   string
 	SQLitePath          string
 	DatabaseAutoMigrate bool
 	HTTPAddr            string
 	PublicBaseURL       string
 
-	DebugLogPlannerInput bool
+	EmbeddingsSQLitePath           string
+	EmbeddingModel                 string
+	EmbeddingDimensions            int
+	EmbeddingIndexRebuildOnStartup bool
+	SemanticRetrievalEnabled       bool
+	SemanticRetrievalLimit         int
 
 	CompactionEnabled            bool
 	CompactionTokenThreshold     int
@@ -34,17 +35,19 @@ func Load() *Config {
 		OpenAIAPIKey:        getEnv("HYDRA_AI_API_KEY", ""),
 		OpenAIBaseURL:       getEnv("HYDRA_AI_BASE_URL", ""),
 		ModelName:           getEnv("SP_AGENT_MODEL", "gpt-4o-mini"),
-		SystemPromptPath:    getEnv("SP_AGENT_SYSTEM_PROMPT_PATH", "internal/agents/wb_api_agent/prompts/system.md"),
-		PlanPromptPath:      getEnv("SP_AGENT_PLAN_PROMPT_PATH", "internal/agents/wb_api_agent/prompts/plan.md"),
-		ExplorePromptPath:   getEnv("SP_AGENT_EXPLORE_PROMPT_PATH", "internal/agents/wb_api_agent/prompts/explore.md"),
-		GeneralPromptPath:   getEnv("SP_AGENT_GENERAL_PROMPT_PATH", "internal/agents/wb_api_agent/prompts/general.md"),
 		WBRegistryPath:      getEnv("SP_AGENT_WB_REGISTRY_PATH", "docs/wb-api"),
 		SQLitePath:          getEnv("SP_AGENT_SQLITE_PATH", "wb_api_agent_system.db"),
 		DatabaseAutoMigrate: getEnvBool("SP_AGENT_DATABASE_AUTO_MIGRATE", true),
 		HTTPAddr:            getEnv("SP_AGENT_HTTP_ADDR", ":8090"),
 		PublicBaseURL:       getEnv("SP_AGENT_PUBLIC_BASE_URL", "http://localhost:8090"),
 
-		DebugLogPlannerInput:         getEnvBool("SP_AGENT_DEBUG_LOG_PLANNER_INPUT", false),
+		EmbeddingsSQLitePath:           getEnv("SP_AGENT_EMBEDDINGS_SQLITE_PATH", "wb_api_agent_embeddings.db"),
+		EmbeddingModel:                 getEnv("SP_AGENT_EMBEDDING_MODEL", "text-embedding-3-small"),
+		EmbeddingDimensions:            getEnvInt("SP_AGENT_EMBEDDING_DIMENSIONS", 1536, 1, 3072),
+		EmbeddingIndexRebuildOnStartup: getEnvBool("SP_AGENT_EMBEDDING_INDEX_REBUILD_ON_STARTUP", false),
+		SemanticRetrievalEnabled:       getEnvBool("SP_AGENT_SEMANTIC_RETRIEVAL_ENABLED", false),
+		SemanticRetrievalLimit:         getEnvInt("SP_AGENT_SEMANTIC_RETRIEVAL_LIMIT", 20, 1, 100),
+
 		CompactionEnabled:            getEnvBool("SP_AGENT_COMPACTION_ENABLED", true),
 		CompactionTokenThreshold:     getEnvInt("SP_AGENT_COMPACTION_TOKEN_THRESHOLD", 60000, 1000, 2000000),
 		CompactionRetainRecentEvents: getEnvInt("SP_AGENT_COMPACTION_RETAIN_RECENT_EVENTS", 8, 1, 100),
