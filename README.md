@@ -246,4 +246,178 @@ chrt_ids = [5]
 
 Тогда selector получает уже нормализованный `BusinessRequest`, а не пытается сам угадывать, что такое “товар 5”.
 
-Итог: агентская архитектура почти правильная. Последний крупный агентский недочёт — не LLM/retrieval, а слой **business input extraction/normalization** перед operation selection/composition.
+
+
+```text
+1. Agent orchestration
+2. Retrieval
+3. LLM operation selection
+4. Operation resolving
+5. Plan composition
+```
+
+## 1. Главный вход агента
+
+```text
+internal/agents/wb_api_agent/agent.go
+```
+
+Это главный сценарий:
+
+```text
+BusinessRequest
+  ↓
+Agent.Plan()
+  ↓
+deterministic planner или LLM path
+  ↓
+ApiExecutionPlan
+```
+
+Смотреть первым. Всё остальное — детали вокруг него.
+
+## 2. Поиск кандидатов операций
+
+```text
+internal/services/wb_registry_retrieval/service.go
+```
+
+Он отвечает за:
+
+```text
+текст запроса
+  ↓
+registry candidates
+```
+
+Рядом лежат детали:
+
+```text
+ranking.go              как ранжируются операции
+search_tokens.go        как режется запрос
+semantic_retriever.go   semantic expansion
+embedding_*.go          embeddings/index/search/status
+```
+
+Это не “агент”, а подготовка кандидатов для агента.
+
+## 3. LLM выбирает operation_id
+
+```text
+internal/agents/wb_api_agent/operation_selector.go
+```
+
+Это единственное место, где LLM должен “думать”:
+
+```text
+BusinessRequest + candidates
+  ↓
+selected operation_id / missing inputs
+```
+
+Важно: он **не должен строить HTTP-план**.
+
+## 4. Проверка выбранной операции
+
+```text
+internal/agents/wb_api_agent/operation_resolver.go
+```
+
+Он берёт выбранный LLM-ом `operation_id` и проверяет:
+
+```text
+есть ли такая операция в registry?
+```
+
+Если нет — LLM не проходит дальше.
+
+## 5. Сборка финального плана
+
+```text
+internal/agents/wb_api_agent/api_plan_composer.go
+```
+
+Это фактически самый важный файл после `agent.go`.
+
+Он строит:
+
+```text
+method
+url
+path params
+query params
+headers
+body
+retry
+rate limit
+response mapping
+final output
+```
+
+То есть:
+
+```text
+LLM выбрал "что вызвать"
+ApiPlanComposer строит "как вызвать"
+```
+
+## Что можно игнорировать, пока разбираешь агентский процесс
+
+Временно не трогай:
+
+```text
+internal/services/a2a/*
+internal/adapters/sqlite/*
+internal/adapters/adk/session/*
+internal/config/*
+cmd/*
+```
+
+Они нужны для HTTP, хранения, запуска и wiring, но не объясняют сам агентский процесс.
+
+## Минимальная карта файлов
+
+```text
+internal/agents/wb_api_agent/
+├── agent.go                  главный pipeline
+├── operation_selector.go     LLM выбирает operation_id
+├── operation_resolver.go     проверяет operation_id по registry
+├── api_plan_composer.go      строит ApiExecutionPlan
+├── plan_post_processor.go    финальная нормализация
+├── normalizer.go             helpers нормализации
+├── validator.go              финальная проверка плана
+└── *_test.go                 тесты
+```
+
+Retrieval отдельно:
+
+```text
+internal/services/wb_registry_retrieval/
+├── service.go                главный retrieval service
+├── ranking.go                lexical ranking
+├── semantic_retriever.go     semantic candidates
+├── embedding_indexer.go      rebuild embeddings
+├── embedding_search.go       cosine search
+└── embedding_status.go       coverage status
+```
+
+## Самая короткая ментальная модель
+
+```text
+agent.go
+  вызывает retrieval service
+  вызывает operation_selector
+  вызывает operation_resolver
+  вызывает api_plan_composer
+  вызывает plan_post_processor
+```
+
+Если хочешь понять систему — читай именно в таком порядке:
+
+```text
+1. internal/agents/wb_api_agent/agent.go
+2. internal/agents/wb_api_agent/operation_selector.go
+3. internal/agents/wb_api_agent/operation_resolver.go
+4. internal/agents/wb_api_agent/api_plan_composer.go
+5. internal/services/wb_registry_retrieval/service.go
+```
