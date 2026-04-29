@@ -839,10 +839,6 @@ func requiredQuestions(request entities.BusinessRequest) []string {
 		questions = append(questions, "Only marketplace=wildberries is supported.")
 	}
 
-	if strings.TrimSpace(request.Intent) == "" {
-		questions = append(questions, "Provide intent.")
-	}
-
 	if strings.TrimSpace(request.NaturalLanguageRequest) == "" {
 		questions = append(questions, "Provide natural_language_request.")
 	}
@@ -851,10 +847,12 @@ func requiredQuestions(request entities.BusinessRequest) []string {
 }
 
 func buildRegistrySearchQuery(request entities.BusinessRequest) string {
-	parts := []string{
-		request.Intent,
-		request.NaturalLanguageRequest,
+	parts := make([]string, 0, 2+len(request.Entities)*2)
+	if strings.TrimSpace(request.Intent) != "" {
+		parts = append(parts, request.Intent)
 	}
+
+	parts = append(parts, request.NaturalLanguageRequest)
 
 	for key, value := range request.Entities {
 		parts = append(parts, key, stringifyEntityValue(value))

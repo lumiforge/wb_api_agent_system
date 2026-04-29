@@ -32,7 +32,6 @@ Example:
   "params": {
     "request_id": "req_20260426_000004",
     "marketplace": "wildberries",
-    "intent": "get_inventory_and_sales",
     "natural_language_request": "Получить остатки на складе 507 и по каждому товару продажи за последний месяц",
     "entities": {
       "warehouse_id": 507,
