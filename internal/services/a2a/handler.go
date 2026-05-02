@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/lumiforge/wb_api_agent_system/internal/authctx"
 	"github.com/lumiforge/wb_api_agent_system/internal/domain/entities"
 	"github.com/lumiforge/wb_api_agent_system/internal/domain/llm"
 	"github.com/lumiforge/wb_api_agent_system/internal/domain/wbregistry"
@@ -183,7 +184,13 @@ func (h *Handler) HandleRPC(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) handleMessageSend(w http.ResponseWriter, r *http.Request, rpcRequest entities.JSONRPCRequest) {
 	startedAt := time.Now()
+	userJWT, err := authctx.BearerTokenFromAuthorizationHeader(r.Header.Get("Authorization"))
+	if err != nil {
+		writeJSONRPCError(w, rpcRequest.ID, http.StatusUnauthorized, -32001, err.Error())
+		return
+	}
 
+	ctx := authctx.WithUserJWT(r.Context(), userJWT)
 	businessRequest, err := parseBusinessRequest(rpcRequest.Params)
 	if err != nil {
 		h.logA2AResult(rpcRequest.ID, "", "", "invalid_params", time.Since(startedAt), err)
@@ -200,7 +207,7 @@ func (h *Handler) handleMessageSend(w http.ResponseWriter, r *http.Request, rpcR
 		metadataValue(businessRequest.Metadata, func(m *entities.RequestMetadata) string { return m.ClientExecutionID }),
 	)
 
-	plan, err := h.planner.Plan(r.Context(), businessRequest)
+	plan, err := h.planner.Plan(ctx, businessRequest)
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) || errors.Is(r.Context().Err(), context.DeadlineExceeded) {
 			h.logA2AResult(rpcRequest.ID, businessRequest.RequestID, businessRequest.Intent, "timeout", time.Since(startedAt), err)

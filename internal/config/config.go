@@ -6,12 +6,11 @@ import (
 	"strconv"
 )
 
-// PURPOSE: Holds runtime settings loaded from environment variables at process startup.
 type Config struct {
-	OpenAIAPIKey        string
-	OpenAIBaseURL       string
-	WBRegistryPath      string
-	ModelName           string
+	ModelProxyBaseURL string
+	WBRegistryPath    string
+	ModelName         string
+
 	SQLitePath          string
 	DatabaseAutoMigrate bool
 	HTTPAddr            string
@@ -32,10 +31,10 @@ type Config struct {
 
 func Load() *Config {
 	return &Config{
-		OpenAIAPIKey:        getEnv("HYDRA_AI_API_KEY", ""),
-		OpenAIBaseURL:       getEnv("HYDRA_AI_BASE_URL", ""),
-		ModelName:           getEnv("SP_AGENT_MODEL", "gpt-4o-mini"),
-		WBRegistryPath:      getEnv("SP_AGENT_WB_REGISTRY_PATH", "docs/wb-api"),
+		ModelProxyBaseURL: getEnv("SP_AGENT_MODEL_PROXY_BASE_URL", "http://localhost:8880"),
+		ModelName:         getEnv("SP_AGENT_MODEL", "gpt-4o-mini"),
+		WBRegistryPath:    getEnv("SP_AGENT_WB_REGISTRY_PATH", "docs/wb-api"),
+
 		SQLitePath:          getEnv("SP_AGENT_SQLITE_PATH", "wb_api_agent_system.db"),
 		DatabaseAutoMigrate: getEnvBool("SP_AGENT_DATABASE_AUTO_MIGRATE", true),
 		HTTPAddr:            getEnv("SP_AGENT_HTTP_ADDR", ":8090"),

@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/lumiforge/wb_api_agent_system/internal/authctx"
 	"github.com/lumiforge/wb_api_agent_system/internal/domain/wbregistry"
 )
 
@@ -45,8 +46,8 @@ const (
 
 func NewOpenAICompatibleEmbeddingClient(baseURL string, apiKey string) *OpenAICompatibleEmbeddingClient {
 	return &OpenAICompatibleEmbeddingClient{
-		baseURL: strings.TrimRight(baseURL, "/"),
-		apiKey:  apiKey,
+		baseURL: strings.TrimRight(strings.TrimSpace(baseURL), "/"),
+		apiKey:  strings.TrimSpace(apiKey),
 		client:  http.DefaultClient,
 	}
 }
@@ -55,6 +56,12 @@ func (c *OpenAICompatibleEmbeddingClient) EmbedTexts(
 	ctx context.Context,
 	input wbregistry.EmbeddingRequest,
 ) (wbregistry.EmbeddingResponse, error) {
+	if c == nil {
+		return wbregistry.EmbeddingResponse{}, fmt.Errorf("embedding client is nil")
+	}
+	if strings.TrimSpace(c.baseURL) == "" {
+		return wbregistry.EmbeddingResponse{}, fmt.Errorf("model proxy base url is required")
+	}
 	if strings.TrimSpace(input.Model) == "" {
 		return wbregistry.EmbeddingResponse{}, fmt.Errorf("embedding model is required")
 	}
@@ -159,8 +166,14 @@ func (c *OpenAICompatibleEmbeddingClient) sendEmbeddingRequest(
 		return nil, 0, fmt.Errorf("create embeddings request: %w", err)
 	}
 
+	authHeader, err := c.authorizationHeader(ctx)
+	if err != nil {
+		return nil, 0, err
+	}
+
 	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Authorization", "Bearer "+c.apiKey)
+	httpReq.Header.Set("Accept", "application/json")
+	httpReq.Header.Set("Authorization", authHeader)
 
 	httpResp, err := c.client.Do(httpReq)
 	if err != nil {
@@ -182,6 +195,19 @@ func (c *OpenAICompatibleEmbeddingClient) sendEmbeddingRequest(
 	}
 
 	return responsePayload, 0, nil
+}
+
+func (c *OpenAICompatibleEmbeddingClient) authorizationHeader(ctx context.Context) (string, error) {
+	userJWT, err := authctx.UserJWT(ctx)
+	if err == nil && strings.TrimSpace(userJWT) != "" {
+		return "Bearer " + strings.TrimSpace(userJWT), nil
+	}
+
+	if strings.TrimSpace(c.apiKey) != "" {
+		return "Bearer " + strings.TrimSpace(c.apiKey), nil
+	}
+
+	return "", err
 }
 
 func embeddingRetryAfter(response *http.Response) time.Duration {

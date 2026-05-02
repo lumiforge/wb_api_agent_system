@@ -30,6 +30,13 @@ type Application struct {
 }
 
 func New(cfg *config.Config, logger *log.Logger) (*Application, error) {
+	if cfg == nil {
+		return nil, fmt.Errorf("config is required")
+	}
+	if logger == nil {
+		logger = log.Default()
+	}
+
 	sessionService, err := adksessionadapter.NewSQLiteSessionService(
 		cfg.SQLitePath,
 		cfg.DatabaseAutoMigrate,
@@ -61,10 +68,16 @@ func New(cfg *config.Config, logger *log.Logger) (*Application, error) {
 			return nil, err
 		}
 	}
+
 	registryStore := sqliteadapter.NewWBRegistryStore(registryDB)
 	registryLoader := wb_registry.NewLoader(registryStore)
-
 	registryEmbeddingStore := sqliteadapter.NewWBRegistryEmbeddingStore(embeddingsDB)
+
+	embeddingClient := adkllm.NewOpenAICompatibleEmbeddingClient(
+		cfg.ModelProxyBaseURL,
+		"",
+	)
+
 	embeddingStatusService, err := wb_registry_retrieval.NewEmbeddingIndexStatusService(wb_registry_retrieval.EmbeddingIndexStatusServiceConfig{
 		SourceStore:    registryStore,
 		EmbeddingStore: registryEmbeddingStore,
@@ -74,10 +87,6 @@ func New(cfg *config.Config, logger *log.Logger) (*Application, error) {
 	if err != nil {
 		return nil, fmt.Errorf("create registry embedding status service: %w", err)
 	}
-	embeddingClient := adkllm.NewOpenAICompatibleEmbeddingClient(
-		cfg.OpenAIBaseURL,
-		cfg.OpenAIAPIKey,
-	)
 
 	logger.Printf(
 		"WB registry embedding store ready: path=%s model=%s dimensions=%d",
@@ -119,8 +128,8 @@ func New(cfg *config.Config, logger *log.Logger) (*Application, error) {
 	if err != nil {
 		return nil, err
 	}
-	var semanticRetriever wb_registry_retrieval.SemanticCandidateRetriever
 
+	var semanticRetriever wb_registry_retrieval.SemanticCandidateRetriever
 	if cfg.SemanticRetrievalEnabled {
 		semanticOperationRetriever, err := wb_registry_retrieval.NewSemanticOperationRetriever(wb_registry_retrieval.SemanticOperationRetrieverConfig{
 			SourceStore:     registryStore,
@@ -160,9 +169,10 @@ func New(cfg *config.Config, logger *log.Logger) (*Application, error) {
 
 	llmModel := adkllm.NewOpenAICompatibleModel(
 		cfg.ModelName,
-		cfg.OpenAIBaseURL,
-		cfg.OpenAIAPIKey,
+		cfg.ModelProxyBaseURL,
+		"",
 	)
+
 	plannerAgent, err := wb_api_agent.New(wb_api_agent.Config{
 		Registry:       registryRetriever,
 		SessionService: sessionService,
