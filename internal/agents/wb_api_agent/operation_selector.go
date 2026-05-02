@@ -42,6 +42,11 @@ func NewADKOperationSelector(cfg OperationSelectorConfig) (*ADKOperationSelector
 
 	instruction := buildOperationSelectorInstruction()
 
+	selectorTools, err := newOperationSelectorTools()
+	if err != nil {
+		return nil, fmt.Errorf("create operation selector tools: %w", err)
+	}
+
 	selectorAgent, err := llmagent.New(llmagent.Config{
 		Name:        "wb_operation_selector_agent",
 		Description: "Selects Wildberries registry operations and missing business inputs.",
@@ -50,6 +55,8 @@ func NewADKOperationSelector(cfg OperationSelectorConfig) (*ADKOperationSelector
 		InstructionProvider: func(ctx adkagent.ReadonlyContext) (string, error) {
 			return instruction, nil
 		},
+		// WHY: Relative temporal expressions require runtime facts and deterministic date arithmetic outside model memory.
+		Tools:           selectorTools,
 		IncludeContents: llmagent.IncludeContentsNone,
 	})
 	if err != nil {
@@ -182,17 +189,29 @@ func buildOperationSelectorInstruction() string {
 		"Do not request, infer, expose, or return secrets.",
 		"Use only operation_id values present in registry_candidates.",
 		"Do not invent method, server_url, path_template, request params, headers, bodies, pagination, retry policy, or response mappings.",
-		"Your responsibility is only operation selection and missing business input identification.",
+		"Your responsibility is only operation selection, tool-assisted business input resolution, and missing business input identification.",
 		"Executable ApiExecutionPlan composition is forbidden in this layer.",
 		"Aliases and semantic interpretation may help you choose among registry_candidates, but they are not source of truth.",
 		"registry_candidates are the only source of truth for available operations.",
 		"business_request is the source of truth for user-provided business facts.",
-		"If required business data is missing, return status=\"needs_clarification\" and fill missing_inputs.",
+		"Tool outputs are the source of truth for runtime facts resolved through tools.",
+		"If required business data is missing and cannot be resolved with available tools, return status=\"needs_clarification\" and fill missing_inputs.",
 		"If the request cannot be represented by any registry candidate, return status=\"unsupported\".",
 		"If policy forbids the request, return status=\"blocked\".",
-		"If selected operations are sufficient for deterministic composition, return status=\"ready_for_composition\".",
+		"If selected operations and resolved inputs are sufficient for deterministic composition, return status=\"ready_for_composition\".",
 		"Never put internal field names into missing_inputs[].user_question.",
 		"Internal field names may appear only in missing_inputs[].internal_fields.",
+		"",
+		"Temporal responsibility:",
+		"- Relative temporal expressions are valid business input when they can be resolved with tools.",
+		"- Do not ask the user to clarify a period only because it was expressed relatively.",
+		"- Use get_current_datetime when a request contains a relative date or period and no current_date is already available.",
+		"- Convert the user's temporal meaning into a semantic period_kind before calling resolve_relative_period.",
+		"- Supported period_kind values: today, yesterday, last_7_days, last_30_days, current_week_to_date, previous_week, current_month_to_date, previous_month.",
+		"- Use resolve_relative_period to convert period_kind into absolute YYYY-MM-DD dates.",
+		"- Put tool-resolved absolute dates into resolved_inputs.period.from and resolved_inputs.period.to.",
+		"- Do not manually calculate or invent absolute dates.",
+		"- Ask for clarification only if the temporal expression remains ambiguous or cannot be resolved by available tools.",
 		"",
 		"OperationSelectionPlan JSON shape:",
 		`{
@@ -223,7 +242,16 @@ func buildOperationSelectorInstruction() string {
       "reason": "why candidate was not selected"
     }
   ],
+  "resolved_inputs": {
+    "period": {
+      "from": "YYYY-MM-DD",
+      "to": "YYYY-MM-DD"
+    }
+  },
   "warnings": []
 }`,
+		"",
+		"When there are no resolved inputs, return:",
+		`"resolved_inputs": {}`,
 	}, "\n")
 }

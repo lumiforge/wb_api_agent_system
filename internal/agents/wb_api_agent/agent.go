@@ -149,7 +149,10 @@ func (a *Agent) planWithSelectorComposer(
 			Message: string(selectionPlan.Status),
 		})), nil
 	}
-
+	if request.Period == nil && selectionPlan.ResolvedInputs.Period != nil {
+		// WHY: Tool-resolved temporal facts must enter deterministic composition through the existing BusinessRequest period contract.
+		request.Period = selectionPlan.ResolvedInputs.Period
+	}
 	selectedRegistryOperations, err := a.operationSelectionResolver.Resolve(*selectionPlan, candidates)
 	if err != nil {
 		return entities.NewBlockedPlan(request, "operation_selection_registry_resolution_failed", append(selectionPlan.Warnings, entities.PlanWarning{

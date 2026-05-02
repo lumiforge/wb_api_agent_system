@@ -1,6 +1,10 @@
 package entities
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+	"time"
+)
 
 type OperationSelectionStatus string
 
@@ -20,18 +24,24 @@ const (
 	OperationInputStrategyStepOutput       OperationInputStrategy = "step_output"
 )
 
+// PURPOSE: Carries structured facts resolved by selector tools into deterministic composition.
+type OperationSelectionResolvedInputs struct {
+	Period *Period `json:"period,omitempty"`
+}
+
 // PURPOSE: Defines the bounded LLM selector output consumed by deterministic plan composition.
 type OperationSelectionPlan struct {
-	SchemaVersion      string                       `json:"schema_version"`
-	RequestID          string                       `json:"request_id"`
-	Marketplace        string                       `json:"marketplace"`
-	Status             OperationSelectionStatus     `json:"status"`
-	UserFacingSummary  string                       `json:"user_facing_summary,omitempty"`
-	SelectedOperations []SelectedOperation          `json:"selected_operations"`
-	MissingInputs      []MissingBusinessInput       `json:"missing_inputs"`
-	RejectedCandidates []RejectedOperationCandidate `json:"rejected_candidates"`
-	Warnings           []PlanWarning                `json:"warnings"`
-	Metadata           *RequestMetadata             `json:"metadata,omitempty"`
+	SchemaVersion      string                           `json:"schema_version"`
+	RequestID          string                           `json:"request_id"`
+	Marketplace        string                           `json:"marketplace"`
+	Status             OperationSelectionStatus         `json:"status"`
+	UserFacingSummary  string                           `json:"user_facing_summary,omitempty"`
+	SelectedOperations []SelectedOperation              `json:"selected_operations"`
+	MissingInputs      []MissingBusinessInput           `json:"missing_inputs"`
+	RejectedCandidates []RejectedOperationCandidate     `json:"rejected_candidates"`
+	Warnings           []PlanWarning                    `json:"warnings"`
+	Metadata           *RequestMetadata                 `json:"metadata,omitempty"`
+	ResolvedInputs     OperationSelectionResolvedInputs `json:"resolved_inputs"`
 }
 
 type SelectedOperation struct {
@@ -113,6 +123,7 @@ func (p OperationSelectionPlan) ShapeErrors() []string {
 	if p.Warnings == nil {
 		errors = append(errors, "warnings must be an array")
 	}
+	errors = append(errors, validateResolvedSelectionInputsShape(p.ResolvedInputs)...)
 
 	for index, operation := range p.SelectedOperations {
 		errors = append(errors, validateSelectedOperationShape(index, operation)...)
@@ -128,7 +139,42 @@ func (p OperationSelectionPlan) ShapeErrors() []string {
 
 	return errors
 }
+func validateResolvedSelectionInputsShape(inputs OperationSelectionResolvedInputs) []string {
+	errors := make([]string, 0)
 
+	if inputs.Period != nil {
+		errors = append(errors, validateResolvedSelectionPeriodShape(*inputs.Period)...)
+	}
+
+	return errors
+}
+
+func validateResolvedSelectionPeriodShape(period Period) []string {
+	errors := make([]string, 0)
+
+	if strings.TrimSpace(period.From) == "" {
+		errors = append(errors, "resolved_inputs.period.from is empty")
+	}
+	if strings.TrimSpace(period.To) == "" {
+		errors = append(errors, "resolved_inputs.period.to is empty")
+	}
+
+	from, fromErr := time.Parse("2006-01-02", period.From)
+	if fromErr != nil {
+		errors = append(errors, "resolved_inputs.period.from must be YYYY-MM-DD")
+	}
+
+	to, toErr := time.Parse("2006-01-02", period.To)
+	if toErr != nil {
+		errors = append(errors, "resolved_inputs.period.to must be YYYY-MM-DD")
+	}
+
+	if fromErr == nil && toErr == nil && from.After(to) {
+		errors = append(errors, "resolved_inputs.period.from must not be after resolved_inputs.period.to")
+	}
+
+	return errors
+}
 func validateReadyForCompositionSelectionShape(plan OperationSelectionPlan) []string {
 	errors := make([]string, 0)
 
