@@ -9,6 +9,9 @@ import (
 	"google.golang.org/adk/model"
 	adksession "google.golang.org/adk/session"
 
+	"github.com/lumiforge/wb_api_agent_system/internal/agents/wb_api_agent/composer"
+	"github.com/lumiforge/wb_api_agent_system/internal/agents/wb_api_agent/orchestration"
+	"github.com/lumiforge/wb_api_agent_system/internal/agents/wb_api_agent/selector"
 	"github.com/lumiforge/wb_api_agent_system/internal/domain/entities"
 	"github.com/lumiforge/wb_api_agent_system/internal/domain/planning"
 	"github.com/lumiforge/wb_api_agent_system/internal/domain/wbregistry"
@@ -28,9 +31,9 @@ type Config struct {
 type Agent struct {
 	registry                   wbregistry.Retriever
 	operationSelector          planning.OperationSelector
-	operationSelectionResolver *OperationSelectionRegistryResolver
+	operationSelectionResolver *orchestration.OperationSelectionRegistryResolver
 	apiPlanComposer            planning.ApiPlanComposer
-	postProcessor              *PlanPostProcessor
+	postProcessor              *orchestration.PlanPostProcessor
 	logger                     *log.Logger
 }
 
@@ -39,7 +42,7 @@ func New(cfg Config) (*Agent, error) {
 	if logger == nil {
 		logger = log.Default()
 	}
-	operationSelector, err := NewADKOperationSelector(OperationSelectorConfig{
+	operationSelector, err := selector.NewADKOperationSelector(selector.OperationSelectorConfig{
 		SessionService: cfg.SessionService,
 		Model:          cfg.Model,
 		Logger:         logger,
@@ -52,9 +55,9 @@ func New(cfg Config) (*Agent, error) {
 	return &Agent{
 		registry:                   cfg.Registry,
 		operationSelector:          operationSelector,
-		operationSelectionResolver: NewOperationSelectionRegistryResolver(),
-		apiPlanComposer:            NewRegistryApiPlanComposer(),
-		postProcessor:              NewPlanPostProcessor(cfg.Registry),
+		operationSelectionResolver: orchestration.NewOperationSelectionRegistryResolver(),
+		apiPlanComposer:            composer.NewRegistryApiPlanComposer(),
+		postProcessor:              orchestration.NewPlanPostProcessor(cfg.Registry),
 		logger:                     logger,
 	}, nil
 }
@@ -207,15 +210,6 @@ func metadataValue(metadata *entities.RequestMetadata, selector func(*entities.R
 	}
 
 	return selector(metadata)
-}
-
-func cleanModelJSON(responseText string) string {
-	cleaned := strings.TrimSpace(responseText)
-	cleaned = strings.TrimPrefix(cleaned, "```json")
-	cleaned = strings.TrimPrefix(cleaned, "```")
-	cleaned = strings.TrimSuffix(cleaned, "```")
-
-	return strings.TrimSpace(cleaned)
 }
 
 func requiredQuestions(request entities.BusinessRequest) []string {

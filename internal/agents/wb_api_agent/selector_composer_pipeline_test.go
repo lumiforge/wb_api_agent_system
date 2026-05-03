@@ -2,7 +2,10 @@ package wb_api_agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	composer "github.com/lumiforge/wb_api_agent_system/internal/agents/wb_api_agent/composer"
+	orch "github.com/lumiforge/wb_api_agent_system/internal/agents/wb_api_agent/orchestration"
 	"strings"
 	"testing"
 
@@ -163,11 +166,11 @@ func TestPlanWithSelectorComposerReturnsReadyPlan(t *testing.T) {
 		operationSelector: &fakeOperationSelector{
 			plan: validPipelineSelectionPlan("operation_stocks"),
 		},
-		operationSelectionResolver: NewOperationSelectionRegistryResolver(),
+		operationSelectionResolver: orch.NewOperationSelectionRegistryResolver(),
 		apiPlanComposer: &fakeApiPlanComposer{
 			plan: validPipelineExecutionPlan(registryOperation),
 		},
-		postProcessor: NewPlanPostProcessor(&singleOperationRegistry{
+		postProcessor: orch.NewPlanPostProcessor(&singleOperationRegistry{
 			operation: registryOperation,
 		}),
 	}
@@ -190,6 +193,33 @@ func TestPlanWithSelectorComposerReturnsReadyPlan(t *testing.T) {
 	}
 }
 
+func TestPlanWithSelectorComposerPropagatesResolvedPeriodWhenRequestPeriodMissing(t *testing.T) {
+	registryOperation := validPipelineRegistryOperation("operation_stocks")
+	fakeComposer := &fakeApiPlanComposer{plan: validPipelineExecutionPlan(registryOperation)}
+	agent := &Agent{operationSelector: &fakeOperationSelector{plan: &entities.OperationSelectionPlan{SchemaVersion: "1.0", RequestID: "request-1", Marketplace: "wildberries", Status: entities.OperationSelectionStatusReadyForComposition, SelectedOperations: []entities.SelectedOperation{{OperationID: "operation_stocks", Purpose: "Fetch stocks.", DependsOn: []string{}, InputStrategy: entities.OperationInputStrategyBusinessEntities}}, MissingInputs: []entities.MissingBusinessInput{}, RejectedCandidates: []entities.RejectedOperationCandidate{}, Warnings: []entities.PlanWarning{}, ResolvedInputs: entities.OperationSelectionResolvedInputs{Period: &entities.Period{From: "2026-04-01", To: "2026-04-30"}}}}, operationSelectionResolver: orch.NewOperationSelectionRegistryResolver(), apiPlanComposer: fakeComposer, postProcessor: orch.NewPlanPostProcessor(&singleOperationRegistry{operation: registryOperation})}
+	_, err := agent.planWithSelectorComposer(context.Background(), validPipelineBusinessRequest(), []entities.WBRegistryOperation{registryOperation})
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if fakeComposer.lastInput.BusinessRequest.Period == nil || fakeComposer.lastInput.BusinessRequest.Period.From != "2026-04-01" || fakeComposer.lastInput.BusinessRequest.Period.To != "2026-04-30" {
+		t.Fatalf("expected propagated period, got %#v", fakeComposer.lastInput.BusinessRequest.Period)
+	}
+}
+
+func TestPlanWithSelectorComposerDoesNotOverwriteExistingRequestPeriod(t *testing.T) {
+	registryOperation := validPipelineRegistryOperation("operation_stocks")
+	fakeComposer := &fakeApiPlanComposer{plan: validPipelineExecutionPlan(registryOperation)}
+	request := validPipelineBusinessRequest()
+	request.Period = &entities.Period{From: "2026-03-01", To: "2026-03-31"}
+	agent := &Agent{operationSelector: &fakeOperationSelector{plan: &entities.OperationSelectionPlan{SchemaVersion: "1.0", RequestID: "request-1", Marketplace: "wildberries", Status: entities.OperationSelectionStatusReadyForComposition, SelectedOperations: []entities.SelectedOperation{{OperationID: "operation_stocks", Purpose: "Fetch stocks.", DependsOn: []string{}, InputStrategy: entities.OperationInputStrategyBusinessEntities}}, MissingInputs: []entities.MissingBusinessInput{}, RejectedCandidates: []entities.RejectedOperationCandidate{}, Warnings: []entities.PlanWarning{}, ResolvedInputs: entities.OperationSelectionResolvedInputs{Period: &entities.Period{From: "2026-04-01", To: "2026-04-30"}}}}, operationSelectionResolver: orch.NewOperationSelectionRegistryResolver(), apiPlanComposer: fakeComposer, postProcessor: orch.NewPlanPostProcessor(&singleOperationRegistry{operation: registryOperation})}
+	_, err := agent.planWithSelectorComposer(context.Background(), request, []entities.WBRegistryOperation{registryOperation})
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if fakeComposer.lastInput.BusinessRequest.Period == nil || fakeComposer.lastInput.BusinessRequest.Period.From != "2026-03-01" || fakeComposer.lastInput.BusinessRequest.Period.To != "2026-03-31" {
+		t.Fatalf("expected existing period preserved, got %#v", fakeComposer.lastInput.BusinessRequest.Period)
+	}
+}
 func TestPlanWithSelectorComposerReturnsBlockedWhenSelectorFails(t *testing.T) {
 	agent := &Agent{
 		operationSelector: &fakeOperationSelector{
@@ -222,7 +252,7 @@ func TestPlanWithSelectorComposerReturnsBlockedWhenResolutionFails(t *testing.T)
 		operationSelector: &fakeOperationSelector{
 			plan: validPipelineSelectionPlan("invented_operation"),
 		},
-		operationSelectionResolver: NewOperationSelectionRegistryResolver(),
+		operationSelectionResolver: orch.NewOperationSelectionRegistryResolver(),
 	}
 
 	plan, err := agent.planWithSelectorComposer(
@@ -243,6 +273,25 @@ func TestPlanWithSelectorComposerReturnsBlockedWhenResolutionFails(t *testing.T)
 	}
 }
 
+func TestPlanWithSelectorComposerReturnsBlockedWhenCompositionUnsupported(t *testing.T) {
+	registryOperation := validPipelineRegistryOperation("operation_stocks")
+	agent := &Agent{operationSelector: &fakeOperationSelector{plan: validPipelineSelectionPlan("operation_stocks")}, operationSelectionResolver: orch.NewOperationSelectionRegistryResolver(), apiPlanComposer: &fakeApiPlanComposer{err: composer.NewApiPlanCompositionUnsupportedError("request-1", "required_request_body_not_composable", "operation requires request body that deterministic composer cannot build from explicit business request fields")}}
+	plan, err := agent.planWithSelectorComposer(context.Background(), validPipelineBusinessRequest(), []entities.WBRegistryOperation{registryOperation})
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if plan.Status != "blocked" || plan.BlockReason != "api_plan_composition_failed" {
+		t.Fatalf("unexpected plan %#v", plan)
+	}
+	if len(plan.Warnings) == 0 || plan.Warnings[0].Code != "api_plan_composition_error" {
+		t.Fatalf("expected api_plan_composition_error warning, got %#v", plan.Warnings)
+	}
+	raw, _ := json.Marshal(plan)
+	if strings.Contains(string(raw), "ready_for_composition") || strings.Contains(string(raw), "selected_operations") {
+		t.Fatalf("plan leaked selector payload: %s", string(raw))
+	}
+}
+
 func TestPlanWithSelectorComposerReturnsBlockedWhenCompositionFails(t *testing.T) {
 	registryOperation := validPipelineRegistryOperation("operation_stocks")
 
@@ -250,7 +299,7 @@ func TestPlanWithSelectorComposerReturnsBlockedWhenCompositionFails(t *testing.T
 		operationSelector: &fakeOperationSelector{
 			plan: validPipelineSelectionPlan("operation_stocks"),
 		},
-		operationSelectionResolver: NewOperationSelectionRegistryResolver(),
+		operationSelectionResolver: orch.NewOperationSelectionRegistryResolver(),
 		apiPlanComposer: &fakeApiPlanComposer{
 			err: errors.New("composition failed"),
 		},
@@ -291,14 +340,17 @@ func (s *fakeOperationSelector) SelectOperations(
 }
 
 type fakeApiPlanComposer struct {
-	plan *entities.ApiExecutionPlan
-	err  error
+	plan      *entities.ApiExecutionPlan
+	err       error
+	lastInput entities.ApiPlanCompositionInput
 }
 
 func (c *fakeApiPlanComposer) Compose(
 	ctx context.Context,
 	input entities.ApiPlanCompositionInput,
 ) (*entities.ApiExecutionPlan, error) {
+	c.lastInput = input
+
 	if c.err != nil {
 		return nil, c.err
 	}

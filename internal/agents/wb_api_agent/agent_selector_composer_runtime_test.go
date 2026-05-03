@@ -2,6 +2,7 @@ package wb_api_agent
 
 import (
 	"context"
+	orch "github.com/lumiforge/wb_api_agent_system/internal/agents/wb_api_agent/orchestration"
 	"io"
 	"log"
 	"testing"
@@ -15,14 +16,14 @@ func TestAgentPlanUsesSelectorComposerPipelineAfterRegistryRetrieval(t *testing.
 			operation: registryOperation,
 		},
 
-		operationSelectionResolver: NewOperationSelectionRegistryResolver(),
+		operationSelectionResolver: orch.NewOperationSelectionRegistryResolver(),
 		operationSelector: &fakeOperationSelector{
 			plan: validPipelineSelectionPlan("operation_stocks"),
 		},
 		apiPlanComposer: &fakeApiPlanComposer{
 			plan: validPipelineExecutionPlan(registryOperation),
 		},
-		postProcessor: NewPlanPostProcessor(&singleOperationRegistry{
+		postProcessor: orch.NewPlanPostProcessor(&singleOperationRegistry{
 			operation: registryOperation,
 		}),
 		logger: testLogger(),

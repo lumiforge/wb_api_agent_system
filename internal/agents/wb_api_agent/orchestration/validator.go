@@ -1,4 +1,4 @@
-package wb_api_agent
+package orchestration
 
 import (
 	"context"
@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/lumiforge/wb_api_agent_system/internal/agents/wb_api_agent/formatting"
 	"github.com/lumiforge/wb_api_agent_system/internal/domain/entities"
 )
 
@@ -374,7 +375,7 @@ func validateValueBinding(
 		if !ok {
 			if binding.Required {
 				// WHY: Missing required source=input values are recoverable by asking the user for business data.
-				result.ClarifyingQuestions = append(result.ClarifyingQuestions, missingInputQuestion(binding.InputName))
+				result.ClarifyingQuestions = append(result.ClarifyingQuestions, formatting.MissingInputQuestion(binding.InputName))
 				return result
 			}
 
@@ -384,7 +385,7 @@ func validateValueBinding(
 
 		if binding.Required && isEmptyInputValue(input.Value) {
 			// WHY: Empty required business inputs are recoverable and must not be treated as registry validation failures.
-			result.ClarifyingQuestions = append(result.ClarifyingQuestions, missingInputQuestion(binding.InputName))
+			result.ClarifyingQuestions = append(result.ClarifyingQuestions, formatting.MissingInputQuestion(binding.InputName))
 		}
 	case "static":
 		if binding.Required && isEmptyInputValue(binding.Value) {
@@ -474,7 +475,7 @@ func validateRequiredRequestBody(
 
 	bodyMap, ok := body.(map[string]any)
 	if !ok {
-		return []string{missingRequestBodyFieldsQuestion(requiredFields)}
+		return []string{formatting.MissingRequestBodyFieldsQuestion(requiredFields)}
 	}
 
 	questions := make([]string, 0)
@@ -483,7 +484,7 @@ func validateRequiredRequestBody(
 		value, ok := bodyMap[field]
 		if !ok || isEmptyBodyValue(value, inputs) {
 			// WHY: User-facing clarification must not expose internal normalized entity names.
-			questions = append(questions, missingRequestBodyFieldQuestion(field))
+			questions = append(questions, formatting.MissingRequestBodyFieldQuestion(field))
 		}
 	}
 

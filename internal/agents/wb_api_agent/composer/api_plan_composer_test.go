@@ -1,4 +1,4 @@
-package wb_api_agent
+package composer
 
 import (
 	"context"
@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	orch "github.com/lumiforge/wb_api_agent_system/internal/agents/wb_api_agent/orchestration"
 	"github.com/lumiforge/wb_api_agent_system/internal/domain/entities"
 	"github.com/lumiforge/wb_api_agent_system/internal/domain/planning"
 	"github.com/lumiforge/wb_api_agent_system/internal/domain/wbregistry"
@@ -238,7 +239,7 @@ func TestRegistryApiPlanComposerDateFromOutputPassesPlanPostProcessorValidation(
 		operation: input.SelectedRegistryOperations[0],
 	}
 
-	processor := NewPlanPostProcessor(registry)
+	processor := orch.NewPlanPostProcessor(registry)
 
 	validationPlan, err := processor.Process(context.Background(), input.BusinessRequest, plan)
 	if err != nil {
@@ -297,11 +298,14 @@ func assertComposedSingleOperationPlan(
 	if step.Request.Headers["Authorization"].Source != "executor_secret" {
 		t.Fatalf("expected executor_secret Authorization, got %#v", step.Request.Headers["Authorization"])
 	}
-	if step.ResponseMapping.Outputs == nil || len(step.ResponseMapping.Outputs) == 0 {
-		t.Fatalf("expected response mapping outputs, got %#v", step.ResponseMapping.Outputs)
+	if step.ResponseMapping.Outputs == nil {
+		t.Fatalf("expected response mapping outputs map, got nil")
 	}
-	if len(plan.FinalOutput.Fields) == 0 {
-		t.Fatalf("expected final output fields, got %#v", plan.FinalOutput.Fields)
+	if len(step.ResponseMapping.Outputs) != 0 {
+		t.Fatalf("expected composer to leave outputs empty before post-processing, got %#v", step.ResponseMapping.Outputs)
+	}
+	if len(plan.FinalOutput.Fields) != 0 {
+		t.Fatalf("expected composer to leave final output fields empty before post-processing, got %#v", plan.FinalOutput.Fields)
 	}
 }
 
@@ -408,7 +412,7 @@ func TestRegistryApiPlanComposerOutputPassesPlanPostProcessorValidation(t *testi
 		operation: input.SelectedRegistryOperations[0],
 	}
 
-	processor := NewPlanPostProcessor(registry)
+	processor := orch.NewPlanPostProcessor(registry)
 
 	validationPlan, err := processor.Process(context.Background(), input.BusinessRequest, plan)
 	if err != nil {
@@ -510,7 +514,7 @@ func TestRegistryApiPlanComposerWarehouseIDOutputPassesPlanPostProcessorValidati
 		operation: input.SelectedRegistryOperations[0],
 	}
 
-	processor := NewPlanPostProcessor(registry)
+	processor := orch.NewPlanPostProcessor(registry)
 
 	validationPlan, err := processor.Process(context.Background(), input.BusinessRequest, plan)
 	if err != nil {
@@ -554,7 +558,7 @@ func TestRegistryApiPlanComposerChrtIDsOutputPassesPlanPostProcessorValidation(t
 		operation: input.SelectedRegistryOperations[0],
 	}
 
-	processor := NewPlanPostProcessor(registry)
+	processor := orch.NewPlanPostProcessor(registry)
 
 	validationPlan, err := processor.Process(context.Background(), input.BusinessRequest, plan)
 	if err != nil {
@@ -665,7 +669,7 @@ func TestRegistryApiPlanComposerWarehouseIDAndChrtIDsOutputPassesPlanPostProcess
 		operation: input.SelectedRegistryOperations[0],
 	}
 
-	processor := NewPlanPostProcessor(registry)
+	processor := orch.NewPlanPostProcessor(registry)
 
 	validationPlan, err := processor.Process(context.Background(), input.BusinessRequest, plan)
 	if err != nil {
@@ -674,5 +678,61 @@ func TestRegistryApiPlanComposerWarehouseIDAndChrtIDsOutputPassesPlanPostProcess
 
 	if validationPlan != nil {
 		t.Fatalf("expected no replacement validation plan, got %#v", validationPlan)
+	}
+}
+
+func TestRegistryApiPlanComposerComposesInventoryRequestDefaultsFromRegistrySchema(t *testing.T) {
+	composer := NewRegistryApiPlanComposer()
+	input := validComposerInput()
+	input.SelectedRegistryOperations[0].RequestBodySchemaJSON = `{"content":{"application/json":{"schema":{"$ref":"#/components/schemas/InventoryRequest"}}},"required":true}`
+	input.BusinessRequest.Entities = map[string]any{}
+
+	plan, err := composer.Compose(context.Background(), input)
+	if err != nil {
+		t.Fatalf("expected composed plan, got %v", err)
+	}
+
+	if len(plan.Steps) != 1 {
+		t.Fatalf("expected one step, got %#v", plan.Steps)
+	}
+
+	body, ok := plan.Steps[0].Request.Body.(map[string]any)
+	if !ok {
+		t.Fatalf("expected map body, got %#v", plan.Steps[0].Request.Body)
+	}
+
+	assertStaticBodyBinding(t, body, "limit", 250000)
+	assertStaticBodyBinding(t, body, "offset", 0)
+}
+
+func TestRegistryApiPlanComposerFailsWhenUnknownRequiredRefBodyNotComposable(t *testing.T) {
+	composer := NewRegistryApiPlanComposer()
+	input := validComposerInput()
+	input.SelectedRegistryOperations[0].RequestBodySchemaJSON = `{"content":{"application/json":{"schema":{"$ref":"#/components/schemas/UnknownRequest"}}},"required":true}`
+	input.BusinessRequest.Entities = map[string]any{}
+
+	plan, err := composer.Compose(context.Background(), input)
+	if plan != nil {
+		t.Fatalf("expected no plan, got %#v", plan)
+	}
+	assertUnsupportedCompositionError(t, err, "required_request_body_not_composable")
+}
+
+func assertStaticBodyBinding(t *testing.T, body map[string]any, name string, expectedValue any) {
+	t.Helper()
+
+	binding, ok := body[name].(entities.ValueBinding)
+	if !ok {
+		t.Fatalf("expected %s ValueBinding, got %#v", name, body[name])
+	}
+
+	if binding.Source != "static" {
+		t.Fatalf("expected %s source=static, got %#v", name, binding)
+	}
+	if binding.Value != expectedValue {
+		t.Fatalf("expected %s value=%#v, got %#v", name, expectedValue, binding.Value)
+	}
+	if !binding.Required {
+		t.Fatalf("expected %s binding to be required", name)
 	}
 }

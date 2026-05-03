@@ -1,1 +1,180 @@
-
+diff --git a/internal/agents/wb_api_agent/composer/bindings.go b/internal/agents/wb_api_agent/composer/bindings.go
+index d0f2d030..b7c2b0a1 100644
+--- a/internal/agents/wb_api_agent/composer/bindings.go
++++ b/internal/agents/wb_api_agent/composer/bindings.go
+@@ -107,6 +107,12 @@ func bodyBindingsFromBusinessRequest(
+ ) map[string]any {
+ 	body := map[string]any{}
+ 
++	defaults := requestBodyDefaultBindingsFromRegistrySchema(requestBodySchemaJSON)
++	for name, binding := range defaults {
++		// WHY: Registry schema defaults are explicit structural facts and may be used without LLM inference.
++		body[name] = binding
++	}
++
+ 	for _, bodyField := range requiredRequestBodyFields(requestBodySchemaJSON) {
+ 		inputName, _, ok := bodyFieldBindingFromBusinessRequest(bodyField, request)
+ 		if !ok {
+@@ -124,6 +130,33 @@ func bodyBindingsFromBusinessRequest(
+ 	return body
+ }
+ 
++func requestBodyDefaultBindingsFromRegistrySchema(requestBodySchemaJSON string) map[string]entities.ValueBinding {
++	switch requestBodySchemaRefName(requestBodySchemaJSON) {
++	case "InventoryRequest":
++		return map[string]entities.ValueBinding{
++			"limit": {
++				Source:   "static",
++				Value:    250000,
++				Required: true,
++			},
++			"offset": {
++				Source:   "static",
++				Value:    0,
++				Required: true,
++			},
++		}
++
++	default:
++		return map[string]entities.ValueBinding{}
++	}
++}
++
+ func bodyFieldBindingFromBusinessRequest(
+ 	bodyField string,
+ 	request entities.BusinessRequest,
+diff --git a/internal/agents/wb_api_agent/composer/composer.go b/internal/agents/wb_api_agent/composer/composer.go
+index 11c805a2..4c0e7ce7 100644
+--- a/internal/agents/wb_api_agent/composer/composer.go
++++ b/internal/agents/wb_api_agent/composer/composer.go
+@@ -95,7 +95,7 @@ func validateSingleOperationCompositionSupport(input entities.ApiPlanComposition
+ 		}
+ 	}
+ 
+-	if requestBodyRequired(operation.RequestBodySchemaJSON) && len(bodyBindingsFromBusinessRequest(operation.RequestBodySchemaJSON, input.BusinessRequest)) == 0 {
++	if requiredRequestBodyNotComposable(operation.RequestBodySchemaJSON, input.BusinessRequest) {
+ 		return NewApiPlanCompositionUnsupportedError(
+ 			input.RequestID,
+ 			"required_request_body_not_composable",
+@@ -107,6 +107,15 @@ func validateSingleOperationCompositionSupport(input entities.ApiPlanComposition
+ 	return nil
+ }
+ 
++func requiredRequestBodyNotComposable(requestBodySchemaJSON string, request entities.BusinessRequest) bool {
++	if !requestBodyRequired(requestBodySchemaJSON) {
++		return false
++	}
++
++	return len(bodyBindingsFromBusinessRequest(requestBodySchemaJSON, request)) == 0
++}
++
+ func composeSingleOperationPlan(input entities.ApiPlanCompositionInput) *entities.ApiExecutionPlan {
+ 	selectedOperation := input.SelectionPlan.SelectedOperations[0]
+ 	operation := input.SelectedRegistryOperations[0]
+diff --git a/internal/agents/wb_api_agent/composer/helpers.go b/internal/agents/wb_api_agent/composer/helpers.go
+index dc31a4e8..3f9b2d41 100644
+--- a/internal/agents/wb_api_agent/composer/helpers.go
++++ b/internal/agents/wb_api_agent/composer/helpers.go
+@@ -115,4 +115,35 @@ func requestBodyRequired(schemaJSON string) bool {
+ 	required, _ := root["required"].(bool)
+ 	return required
+ }
++
++func requestBodySchemaRefName(schemaJSON string) string {
++	var root map[string]any
++	if json.Unmarshal([]byte(schemaJSON), &root) != nil {
++		return ""
++	}
++
++	content, ok := root["content"].(map[string]any)
++	if !ok {
++		return ""
++	}
++
++	jsonContent, ok := content["application/json"].(map[string]any)
++	if !ok {
++		return ""
++	}
++
++	schema, ok := jsonContent["schema"].(map[string]any)
++	if !ok {
++		return ""
++	}
++
++	ref, ok := schema["$ref"].(string)
++	if !ok {
++		return ""
++	}
++
++	const prefix = "#/components/schemas/"
++	if !strings.HasPrefix(ref, prefix) {
++		return ""
++	}
++
++	return strings.TrimSpace(strings.TrimPrefix(ref, prefix))
++}
+diff --git a/internal/agents/wb_api_agent/composer/api_plan_composer_test.go b/internal/agents/wb_api_agent/composer/api_plan_composer_test.go
+index 1a13e811..d0b74a92 100644
+--- a/internal/agents/wb_api_agent/composer/api_plan_composer_test.go
++++ b/internal/agents/wb_api_agent/composer/api_plan_composer_test.go
+@@ -648,14 +648,55 @@ func TestRegistryApiPlanComposerWarehouseIDAndChrtIDsOutputPassesPlanPostProcess
+ 	}
+ }
+ 
+-func TestRegistryApiPlanComposerFailsWhenRequiredRefBodyNotComposable(t *testing.T) {
++func TestRegistryApiPlanComposerComposesInventoryRequestDefaultsFromRegistrySchema(t *testing.T) {
+ 	composer := NewRegistryApiPlanComposer()
+ 	input := validComposerInput()
+ 	input.SelectedRegistryOperations[0].RequestBodySchemaJSON = `{"content":{"application/json":{"schema":{"$ref":"#/components/schemas/InventoryRequest"}}},"required":true}`
+ 	input.BusinessRequest.Entities = map[string]any{}
++
++	plan, err := composer.Compose(context.Background(), input)
++	if err != nil {
++		t.Fatalf("expected composed plan, got %v", err)
++	}
++
++	if len(plan.Steps) != 1 {
++		t.Fatalf("expected one step, got %#v", plan.Steps)
++	}
++
++	body, ok := plan.Steps[0].Request.Body.(map[string]any)
++	if !ok {
++		t.Fatalf("expected map body, got %#v", plan.Steps[0].Request.Body)
++	}
++
++	assertStaticBodyBinding(t, body, "limit", 250000)
++	assertStaticBodyBinding(t, body, "offset", 0)
++}
++
++func TestRegistryApiPlanComposerFailsWhenUnknownRequiredRefBodyNotComposable(t *testing.T) {
++	composer := NewRegistryApiPlanComposer()
++	input := validComposerInput()
++	input.SelectedRegistryOperations[0].RequestBodySchemaJSON = `{"content":{"application/json":{"schema":{"$ref":"#/components/schemas/UnknownRequest"}}},"required":true}`
++	input.BusinessRequest.Entities = map[string]any{}
++
+ 	plan, err := composer.Compose(context.Background(), input)
+ 	if plan != nil {
+ 		t.Fatalf("expected no plan, got %#v", plan)
+ 	}
++
+ 	assertUnsupportedCompositionError(t, err, "required_request_body_not_composable")
+ }
++
++func assertStaticBodyBinding(t *testing.T, body map[string]any, name string, expectedValue any) {
++	t.Helper()
++
++	binding, ok := body[name].(entities.ValueBinding)
++	if !ok {
++		t.Fatalf("expected %s ValueBinding, got %#v", name, body[name])
++	}
++
++	if binding.Source != "static" {
++		t.Fatalf("expected %s source=static, got %#v", name, binding)
++	}
++	if binding.Value != expectedValue {
++		t.Fatalf("expected %s value=%#v, got %#v", name, expectedValue, binding.Value)
++	}
++	if !binding.Required {
++		t.Fatalf("expected %s binding to be required", name)
++	}
++}

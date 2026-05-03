@@ -1,4 +1,4 @@
-package wb_api_agent
+package selector
 
 import (
 	"context"
@@ -14,6 +14,7 @@ import (
 	adksession "google.golang.org/adk/session"
 	"google.golang.org/genai"
 
+	"github.com/lumiforge/wb_api_agent_system/internal/agents/wb_api_agent/tools"
 	"github.com/lumiforge/wb_api_agent_system/internal/domain/entities"
 	"github.com/lumiforge/wb_api_agent_system/internal/domain/planning"
 )
@@ -42,7 +43,7 @@ func NewADKOperationSelector(cfg OperationSelectorConfig) (*ADKOperationSelector
 
 	instruction := buildOperationSelectorInstruction()
 
-	selectorTools, err := newOperationSelectorTools()
+	selectorTools, err := tools.NewOperationSelectorTools()
 	if err != nil {
 		return nil, fmt.Errorf("create operation selector tools: %w", err)
 	}
@@ -178,80 +179,24 @@ func parseOperationSelectionPlan(responseText string) (*entities.OperationSelect
 	return &plan, nil
 }
 
-func buildOperationSelectorInstruction() string {
-	return strings.Join([]string{
-		"You are the Wildberries API operation selector.",
-		"You receive exactly one OperationSelectionInput JSON object.",
-		"You must return exactly one OperationSelectionPlan JSON object.",
-		"Do not return markdown.",
-		"Do not return explanations.",
-		"Do not execute HTTP requests.",
-		"Do not request, infer, expose, or return secrets.",
-		"Use only operation_id values present in registry_candidates.",
-		"Do not invent method, server_url, path_template, request params, headers, bodies, pagination, retry policy, or response mappings.",
-		"Your responsibility is only operation selection, tool-assisted business input resolution, and missing business input identification.",
-		"Executable ApiExecutionPlan composition is forbidden in this layer.",
-		"Aliases and semantic interpretation may help you choose among registry_candidates, but they are not source of truth.",
-		"registry_candidates are the only source of truth for available operations.",
-		"business_request is the source of truth for user-provided business facts.",
-		"Tool outputs are the source of truth for runtime facts resolved through tools.",
-		"If required business data is missing and cannot be resolved with available tools, return status=\"needs_clarification\" and fill missing_inputs.",
-		"If the request cannot be represented by any registry candidate, return status=\"unsupported\".",
-		"If policy forbids the request, return status=\"blocked\".",
-		"If selected operations and resolved inputs are sufficient for deterministic composition, return status=\"ready_for_composition\".",
-		"Never put internal field names into missing_inputs[].user_question.",
-		"Internal field names may appear only in missing_inputs[].internal_fields.",
-		"",
-		"Temporal responsibility:",
-		"- Relative temporal expressions are valid business input when they can be resolved with tools.",
-		"- Do not ask the user to clarify a period only because it was expressed relatively.",
-		"- Use get_current_datetime when a request contains a relative date or period and no current_date is already available.",
-		"- Convert the user's temporal meaning into a semantic period_kind before calling resolve_relative_period.",
-		"- Supported period_kind values: today, yesterday, last_7_days, last_30_days, current_week_to_date, previous_week, current_month_to_date, previous_month.",
-		"- Use resolve_relative_period to convert period_kind into absolute YYYY-MM-DD dates.",
-		"- Put tool-resolved absolute dates into resolved_inputs.period.from and resolved_inputs.period.to.",
-		"- Do not manually calculate or invent absolute dates.",
-		"- Ask for clarification only if the temporal expression remains ambiguous or cannot be resolved by available tools.",
-		"",
-		"OperationSelectionPlan JSON shape:",
-		`{
-  "schema_version": "1.0",
-  "request_id": "same as input.request_id",
-  "marketplace": "wildberries",
-  "status": "ready_for_composition | needs_clarification | unsupported | blocked",
-  "user_facing_summary": "short user-facing summary when useful",
-  "selected_operations": [
-    {
-      "operation_id": "must exactly match one registry_candidates[].operation_id",
-      "purpose": "why this operation is needed",
-      "depends_on": [],
-      "input_strategy": "no_user_input | static_defaults | business_entities | step_output"
-    }
-  ],
-  "missing_inputs": [
-    {
-      "code": "stable_business_input_code",
-      "user_question": "question visible to the user without internal field names",
-      "accepts": [],
-      "internal_fields": []
-    }
-  ],
-  "rejected_candidates": [
-    {
-      "operation_id": "must exactly match one registry_candidates[].operation_id",
-      "reason": "why candidate was not selected"
-    }
-  ],
-  "resolved_inputs": {
-    "period": {
-      "from": "YYYY-MM-DD",
-      "to": "YYYY-MM-DD"
-    }
-  },
-  "warnings": []
-}`,
-		"",
-		"When there are no resolved inputs, return:",
-		`"resolved_inputs": {}`,
-	}, "\n")
+func cleanModelJSON(responseText string) string {
+	cleaned := strings.TrimSpace(responseText)
+	cleaned = strings.TrimPrefix(cleaned, "```json")
+	cleaned = strings.TrimPrefix(cleaned, "```")
+	cleaned = strings.TrimSuffix(cleaned, "```")
+	return strings.TrimSpace(cleaned)
+}
+
+func contentText(content *genai.Content) string {
+	if content == nil {
+		return ""
+	}
+	parts := make([]string, 0, len(content.Parts))
+	for _, part := range content.Parts {
+		if part.Text == "" {
+			continue
+		}
+		parts = append(parts, part.Text)
+	}
+	return strings.Join(parts, "\n")
 }

@@ -56,6 +56,7 @@ func NewHandler(cfg Config, planner llm.Planner, registry wbregistry.Retriever) 
 		logger:   logger,
 	}
 }
+
 func (h *Handler) HandleHealth(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSONRPCError(w, nil, http.StatusMethodNotAllowed, -32601, "method not allowed")
@@ -193,10 +194,11 @@ func (h *Handler) handleMessageSend(w http.ResponseWriter, r *http.Request, rpcR
 	ctx := authctx.WithUserJWT(r.Context(), userJWT)
 	businessRequest, err := parseBusinessRequest(rpcRequest.Params)
 	if err != nil {
-		h.logA2AResult(rpcRequest.ID, "", "", "invalid_params", time.Since(startedAt), err)
+		h.logA2AResult(rpcRequest.ID, "", "", "invalid_params", nil, time.Since(startedAt), err)
 		writeJSONRPCError(w, rpcRequest.ID, http.StatusBadRequest, -32602, err.Error())
 		return
 	}
+
 	h.logger.Printf("a2a request received jsonrpc_id=%v request_id=%s correlation_id=%s session_id=%s run_id=%s tool_call_id=%s client_execution_id=%s",
 		rpcRequest.ID,
 		businessRequest.RequestID,
@@ -210,12 +212,12 @@ func (h *Handler) handleMessageSend(w http.ResponseWriter, r *http.Request, rpcR
 	plan, err := h.planner.Plan(ctx, businessRequest)
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) || errors.Is(r.Context().Err(), context.DeadlineExceeded) {
-			h.logA2AResult(rpcRequest.ID, businessRequest.RequestID, businessRequest.Intent, "timeout", time.Since(startedAt), err)
+			h.logA2AResult(rpcRequest.ID, businessRequest.RequestID, businessRequest.Intent, "timeout", nil, time.Since(startedAt), err)
 			writeJSONRPCError(w, rpcRequest.ID, http.StatusOK, -32000, "request timeout")
 			return
 		}
 
-		h.logA2AResult(rpcRequest.ID, businessRequest.RequestID, businessRequest.Intent, "internal_error", time.Since(startedAt), err)
+		h.logA2AResult(rpcRequest.ID, businessRequest.RequestID, businessRequest.Intent, "internal_error", nil, time.Since(startedAt), err)
 		writeJSONRPCError(w, rpcRequest.ID, http.StatusOK, -32603, "internal error")
 		return
 	}
@@ -226,8 +228,8 @@ func (h *Handler) handleMessageSend(w http.ResponseWriter, r *http.Request, rpcR
 		status = plan.Status
 	}
 
-	h.logA2AResult(rpcRequest.ID, businessRequest.RequestID, businessRequest.Intent, status, time.Since(startedAt), nil)
-	h.logger.Printf("a2a response returned jsonrpc_id=%v request_id=%s correlation_id=%s session_id=%s run_id=%s tool_call_id=%s client_execution_id=%s status=%s",
+	h.logA2AResult(rpcRequest.ID, businessRequest.RequestID, businessRequest.Intent, status, plan, time.Since(startedAt), nil)
+	h.logger.Printf("a2a response returned jsonrpc_id=%v request_id=%s correlation_id=%s session_id=%s run_id=%s tool_call_id=%s client_execution_id=%s status=%s block_reason=%s warning_codes=%s",
 		rpcRequest.ID,
 		businessRequest.RequestID,
 		metadataValue(businessRequest.Metadata, func(m *entities.RequestMetadata) string { return m.CorrelationID }),
@@ -236,6 +238,8 @@ func (h *Handler) handleMessageSend(w http.ResponseWriter, r *http.Request, rpcR
 		metadataValue(businessRequest.Metadata, func(m *entities.RequestMetadata) string { return m.ToolCallID }),
 		metadataValue(businessRequest.Metadata, func(m *entities.RequestMetadata) string { return m.ClientExecutionID }),
 		status,
+		planBlockReason(plan),
+		planWarningCodes(plan),
 	)
 
 	writeJSON(w, http.StatusOK, entities.JSONRPCResponse{
@@ -250,16 +254,19 @@ func (h *Handler) logA2AResult(
 	businessRequestID string,
 	intent string,
 	status string,
+	plan *entities.ApiExecutionPlan,
 	duration time.Duration,
 	err error,
 ) {
 	if err != nil {
 		h.logger.Printf(
-			"a2a message/send finished jsonrpc_id=%v request_id=%s intent=%s status=%s duration_ms=%d error=%q",
+			"a2a message/send finished jsonrpc_id=%v request_id=%s intent=%s status=%s block_reason=%s warning_codes=%s duration_ms=%d error=%q",
 			jsonrpcID,
 			businessRequestID,
 			intent,
 			status,
+			planBlockReason(plan),
+			planWarningCodes(plan),
 			duration.Milliseconds(),
 			err.Error(),
 		)
@@ -267,14 +274,43 @@ func (h *Handler) logA2AResult(
 	}
 
 	h.logger.Printf(
-		"a2a message/send finished jsonrpc_id=%v request_id=%s intent=%s status=%s duration_ms=%d",
+		"a2a message/send finished jsonrpc_id=%v request_id=%s intent=%s status=%s block_reason=%s warning_codes=%s duration_ms=%d",
 		jsonrpcID,
 		businessRequestID,
 		intent,
 		status,
+		planBlockReason(plan),
+		planWarningCodes(plan),
 		duration.Milliseconds(),
 	)
 }
+
+func planBlockReason(plan *entities.ApiExecutionPlan) string {
+	if plan == nil {
+		return ""
+	}
+
+	return plan.BlockReason
+}
+
+func planWarningCodes(plan *entities.ApiExecutionPlan) string {
+	if plan == nil || len(plan.Warnings) == 0 {
+		return ""
+	}
+
+	codes := make([]string, 0, len(plan.Warnings))
+	for _, warning := range plan.Warnings {
+		code := strings.TrimSpace(warning.Code)
+		if code == "" {
+			continue
+		}
+
+		codes = append(codes, code)
+	}
+
+	return strings.Join(codes, ",")
+}
+
 func (h *Handler) agentCard() entities.AgentCard {
 	return entities.AgentCard{
 		Name:        "WB API Agent System",
@@ -313,6 +349,7 @@ func parseBusinessRequest(raw json.RawMessage) (entities.BusinessRequest, error)
 
 	return request, nil
 }
+
 func decodeJSONRPCRequest(r *http.Request) (entities.JSONRPCRequest, error) {
 	var request entities.JSONRPCRequest
 
@@ -363,6 +400,7 @@ func writeJSONRPCDecodeError(w http.ResponseWriter, err error) {
 
 	writeJSONRPCError(w, nil, http.StatusBadRequest, -32600, "invalid request")
 }
+
 func writeJSONRPCError(w http.ResponseWriter, id any, statusCode int, code int, message string) {
 	writeJSON(w, statusCode, entities.JSONRPCResponse{
 		JSONRPC: "2.0",

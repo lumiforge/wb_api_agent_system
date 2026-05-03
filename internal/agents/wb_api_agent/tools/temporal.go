@@ -1,4 +1,4 @@
-package wb_api_agent
+package tools
 
 import (
 	"fmt"
@@ -33,7 +33,7 @@ type resolveRelativePeriodResult struct {
 	DateTo     string `json:"date_to"`
 }
 
-func newOperationSelectorTools() ([]tool.Tool, error) {
+func NewOperationSelectorTools() ([]tool.Tool, error) {
 	currentDateTimeTool, err := functiontool.New(functiontool.Config{
 		Name:        "get_current_datetime",
 		Description: "Returns the current date and time for a requested IANA timezone. Use it when a user request contains relative dates or periods.",

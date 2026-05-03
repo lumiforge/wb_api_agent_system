@@ -1,4 +1,4 @@
-package wb_api_agent
+package selector
 
 import (
 	"errors"

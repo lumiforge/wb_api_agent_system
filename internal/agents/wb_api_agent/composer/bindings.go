@@ -1,4 +1,4 @@
-package wb_api_agent
+package composer
 
 import (
 	"strconv"
@@ -176,6 +176,16 @@ func bodyInputsFromBusinessRequest(
 ) map[string]entities.InputValue {
 	inputs := map[string]entities.InputValue{}
 
+	for name, binding := range requestBodyDefaultBindingsFromRegistrySchema(requestBodySchemaJSON) {
+		// WHY: Registry schema defaults are explicit structural facts and may be used without LLM inference.
+		inputs[name] = entities.InputValue{
+			Type:        inputValueTypeFromStaticValue(binding.Value),
+			Required:    binding.Required,
+			Value:       binding.Value,
+			Description: "Registry schema default.",
+		}
+	}
+
 	for _, bodyField := range requiredRequestBodyFields(requestBodySchemaJSON) {
 		inputName, inputValue, ok := bodyFieldBindingFromBusinessRequest(bodyField, request)
 		if !ok {
@@ -194,6 +204,11 @@ func bodyBindingsFromBusinessRequest(
 ) map[string]any {
 	body := map[string]any{}
 
+	for name, binding := range requestBodyDefaultBindingsFromRegistrySchema(requestBodySchemaJSON) {
+		// WHY: Registry schema defaults are explicit structural facts and may be used without LLM inference.
+		body[name] = binding
+	}
+
 	for _, bodyField := range requiredRequestBodyFields(requestBodySchemaJSON) {
 		inputName, _, ok := bodyFieldBindingFromBusinessRequest(bodyField, request)
 		if !ok {
@@ -208,6 +223,42 @@ func bodyBindingsFromBusinessRequest(
 	}
 
 	return body
+}
+
+func requestBodyDefaultBindingsFromRegistrySchema(requestBodySchemaJSON string) map[string]entities.ValueBinding {
+	switch requestBodySchemaRefName(requestBodySchemaJSON) {
+	case "InventoryRequest":
+		return map[string]entities.ValueBinding{
+			"limit": {
+				Source:   "static",
+				Value:    250000,
+				Required: true,
+			},
+			"offset": {
+				Source:   "static",
+				Value:    0,
+				Required: true,
+			},
+		}
+
+	default:
+		return map[string]entities.ValueBinding{}
+	}
+}
+
+func inputValueTypeFromStaticValue(value any) string {
+	switch value.(type) {
+	case int, int64, float64:
+		return "integer"
+	case string:
+		return "string"
+	case bool:
+		return "boolean"
+	case []any, []int, []int64, []float64, []string:
+		return "array"
+	default:
+		return "object"
+	}
 }
 
 func bodyFieldBindingFromBusinessRequest(

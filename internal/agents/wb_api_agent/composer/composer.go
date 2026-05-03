@@ -1,4 +1,4 @@
-package wb_api_agent
+package composer
 
 import (
 	"context"
@@ -103,7 +103,22 @@ func validateSingleOperationCompositionSupport(input entities.ApiPlanComposition
 		}
 	}
 
+	if requiredRequestBodyNotComposable(operation.RequestBodySchemaJSON, input.BusinessRequest) {
+		return NewApiPlanCompositionUnsupportedError(
+			input.RequestID,
+			"required_request_body_not_composable",
+			"operation requires request body that deterministic composer cannot build from explicit business request fields",
+		)
+	}
+
 	return nil
+}
+func requiredRequestBodyNotComposable(requestBodySchemaJSON string, request entities.BusinessRequest) bool {
+	if !requestBodyRequired(requestBodySchemaJSON) {
+		return false
+	}
+
+	return len(bodyBindingsFromBusinessRequest(requestBodySchemaJSON, request)) == 0
 }
 
 func composeSingleOperationPlan(input entities.ApiPlanCompositionInput) *entities.ApiExecutionPlan {
@@ -155,9 +170,6 @@ func composeSingleOperationPlan(input entities.ApiPlanCompositionInput) *entitie
 		},
 	}
 
-	// WHY: Response output mapping is derived from registry response schema, not from LLM output.
-	applyResponseMappingDefaults(&step, operation)
-
 	plan := &entities.ApiExecutionPlan{
 		SchemaVersion:          "1.0",
 		RequestID:              input.RequestID,
@@ -187,9 +199,6 @@ func composeSingleOperationPlan(input entities.ApiPlanCompositionInput) *entitie
 		},
 		Metadata: input.Metadata,
 	}
-
-	// WHY: Final output fields are deterministic references to composed step response mappings.
-	normalizeFinalOutput(plan)
 
 	return plan
 }
