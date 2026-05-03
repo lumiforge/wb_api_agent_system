@@ -2,6 +2,7 @@ package tools
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"google.golang.org/adk/tool"
@@ -22,15 +23,16 @@ type getCurrentDateTimeResult struct {
 
 type resolveRelativePeriodArgs struct {
 	PeriodKind  string `json:"period_kind"`
-	CurrentDate string `json:"current_date"`
+	CurrentDate string `json:"current_date,omitempty"`
 	Timezone    string `json:"timezone,omitempty"`
 }
 
 type resolveRelativePeriodResult struct {
-	PeriodKind string `json:"period_kind"`
-	Timezone   string `json:"timezone"`
-	DateFrom   string `json:"date_from"`
-	DateTo     string `json:"date_to"`
+	PeriodKind  string `json:"period_kind"`
+	Timezone    string `json:"timezone"`
+	CurrentDate string `json:"current_date"`
+	DateFrom    string `json:"date_from"`
+	DateTo      string `json:"date_to"`
 }
 
 func NewOperationSelectorTools() ([]tool.Tool, error) {
@@ -44,7 +46,7 @@ func NewOperationSelectorTools() ([]tool.Tool, error) {
 
 	resolveRelativePeriodTool, err := functiontool.New(functiontool.Config{
 		Name:        "resolve_relative_period",
-		Description: "Resolves a semantic relative period kind into absolute YYYY-MM-DD dates. period_kind must be one of: today, yesterday, last_7_days, last_30_days, current_week_to_date, previous_week, current_month_to_date, previous_month.",
+		Description: "Resolves a semantic relative period kind into absolute YYYY-MM-DD dates using the current date in the requested timezone. period_kind must be one of: today, yesterday, last_7_days, last_30_days, current_week_to_date, previous_week, current_month_to_date, previous_month. current_date is optional and should only be used as an explicit YYYY-MM-DD override.",
 	}, resolveRelativePeriod)
 	if err != nil {
 		return nil, fmt.Errorf("create resolve_relative_period tool: %w", err)
@@ -87,21 +89,28 @@ func resolveRelativePeriod(ctx tool.Context, args resolveRelativePeriodArgs) (re
 		return resolveRelativePeriodResult{}, fmt.Errorf("load timezone %q: %w", timezone, err)
 	}
 
-	currentDate, err := time.ParseInLocation("2006-01-02", args.CurrentDate, loc)
-	if err != nil {
-		return resolveRelativePeriodResult{}, fmt.Errorf("parse current_date: %w", err)
+	currentDate := time.Now().In(loc)
+	if strings.TrimSpace(args.CurrentDate) != "" {
+		parsedCurrentDate, err := time.ParseInLocation("2006-01-02", strings.TrimSpace(args.CurrentDate), loc)
+		if err != nil {
+			return resolveRelativePeriodResult{}, fmt.Errorf("parse current_date: %w", err)
+		}
+		currentDate = parsedCurrentDate
 	}
+	// WHY: current_date is a runtime fact owned by the tool, not a business input the LLM must provide.
 
 	from, to, err := resolveRelativePeriodKind(args.PeriodKind, currentDate)
 	if err != nil {
 		return resolveRelativePeriodResult{}, err
 	}
-
+	y, m, d := currentDate.Date()
+	normalizedCurrentDate := time.Date(y, m, d, 0, 0, 0, 0, loc)
 	return resolveRelativePeriodResult{
-		PeriodKind: args.PeriodKind,
-		Timezone:   timezone,
-		DateFrom:   from.Format("2006-01-02"),
-		DateTo:     to.Format("2006-01-02"),
+		PeriodKind:  args.PeriodKind,
+		Timezone:    timezone,
+		CurrentDate: normalizedCurrentDate.Format("2006-01-02"),
+		DateFrom:    from.Format("2006-01-02"),
+		DateTo:      to.Format("2006-01-02"),
 	}, nil
 }
 

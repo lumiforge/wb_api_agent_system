@@ -33,7 +33,8 @@ func Load() *Config {
 	return &Config{
 		ModelProxyBaseURL: getEnv("SP_AGENT_MODEL_PROXY_BASE_URL", "http://localhost:8880"),
 		ModelName:         getEnv("SP_AGENT_MODEL", "gpt-4o-mini"),
-		WBRegistryPath:    getEnv("SP_AGENT_WB_REGISTRY_PATH", "docs/wb-api"),
+
+		WBRegistryPath: getEnv("SP_AGENT_WB_REGISTRY_PATH", "docs/wb-api"),
 
 		SQLitePath:          getEnv("SP_AGENT_SQLITE_PATH", "wb_api_agent_system.db"),
 		DatabaseAutoMigrate: getEnvBool("SP_AGENT_DATABASE_AUTO_MIGRATE", true),
