@@ -185,6 +185,7 @@ func bodyInputsFromBusinessRequest(
 			Description: "Registry schema default.",
 		}
 	}
+	mergeInputValues(inputs, periodBodyInputs(request.Period))
 
 	for _, bodyField := range requiredRequestBodyFields(requestBodySchemaJSON) {
 		inputName, inputValue, ok := bodyFieldBindingFromBusinessRequest(bodyField, request)
@@ -206,6 +207,11 @@ func bodyBindingsFromBusinessRequest(
 
 	for name, binding := range requestBodyDefaultBindingsFromRegistrySchema(requestBodySchemaJSON) {
 		// WHY: Registry schema defaults are explicit structural facts and may be used without LLM inference.
+		body[name] = binding
+	}
+
+	for name, binding := range requestBodyPeriodBindingsFromRegistrySchema(requestBodySchemaJSON, request) {
+		// WHY: Period body fields are deterministic bindings from resolved business period, not LLM-generated request body.
 		body[name] = binding
 	}
 
@@ -246,6 +252,24 @@ func requestBodyDefaultBindingsFromRegistrySchema(requestBodySchemaJSON string) 
 	}
 }
 
+func requestBodyPeriodBindingsFromRegistrySchema(
+	requestBodySchemaJSON string,
+	request entities.BusinessRequest,
+) map[string]entities.ValueBinding {
+	if request.Period == nil {
+		return map[string]entities.ValueBinding{}
+	}
+
+	switch requestBodySchemaRefName(requestBodySchemaJSON) {
+	case "SalesReportsDetailedReq":
+		// WHY: This WB request body is a period-bounded report contract; the selector-resolved period is the source of truth.
+		return periodBodyBindings(request.Period, "dateFrom", "dateTo")
+
+	default:
+		return map[string]entities.ValueBinding{}
+	}
+}
+
 func inputValueTypeFromStaticValue(value any) string {
 	switch value.(type) {
 	case int, int64, float64:
@@ -259,6 +283,60 @@ func inputValueTypeFromStaticValue(value any) string {
 	default:
 		return "object"
 	}
+}
+
+func periodBodyBindings(period *entities.Period, fromField string, toField string) map[string]entities.ValueBinding {
+	result := map[string]entities.ValueBinding{}
+
+	if period == nil {
+		return result
+	}
+
+	if strings.TrimSpace(period.From) != "" {
+		result[fromField] = entities.ValueBinding{
+			Source:    "input",
+			InputName: "date_from",
+			Required:  true,
+		}
+	}
+
+	if strings.TrimSpace(period.To) != "" {
+		result[toField] = entities.ValueBinding{
+			Source:    "input",
+			InputName: "date_to",
+			Required:  true,
+		}
+	}
+
+	return result
+}
+
+func periodBodyInputs(period *entities.Period) map[string]entities.InputValue {
+	result := map[string]entities.InputValue{}
+
+	if period == nil {
+		return result
+	}
+
+	if strings.TrimSpace(period.From) != "" {
+		result["date_from"] = entities.InputValue{
+			Type:        "string",
+			Required:    true,
+			Value:       period.From,
+			Description: "Period start date.",
+		}
+	}
+
+	if strings.TrimSpace(period.To) != "" {
+		result["date_to"] = entities.InputValue{
+			Type:        "string",
+			Required:    true,
+			Value:       period.To,
+			Description: "Period end date.",
+		}
+	}
+
+	return result
 }
 
 func bodyFieldBindingFromBusinessRequest(
